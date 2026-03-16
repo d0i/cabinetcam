@@ -32,9 +32,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .photo-count { font-size: 13px; color: #999; margin-top: 4px; }
 .photo-date { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.5); color: #fff; font-size: 10px; padding: 2px 4px; text-align: center; }
+.exterior-section { margin-bottom: 12px; }
+.exterior-preview { position: relative; display: inline-block; }
+.exterior-preview img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 8px; }
+.exterior-placeholder { width: 100%; height: 120px; background: #eee; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: #999; cursor: pointer; border: 2px dashed #ddd; }
+.exterior-placeholder:active { background: #e8e8e8; }
+.exterior-actions { display: flex; gap: 8px; margin-top: 8px; }
 .settings-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .settings-row label { font-size: 13px; color: #666; flex: 1; }
 .settings-row input[type=number] { width: 70px; padding: 6px 8px; border: 1.5px solid #ddd; border-radius: 6px; font-size: 14px; text-align: center; }
+.settings-hint { font-size: 11px; color: #999; }
+.settings-row select { padding: 6px 8px; border: 1.5px solid #ddd; border-radius: 6px; font-size: 13px; background: #fafafa; }
 .lightbox { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); z-index: 200; flex-direction: column; align-items: center; justify-content: center; }
 .lightbox.show { display: flex; }
 .lightbox img { max-width: 100%; max-height: 80vh; object-fit: contain; }
@@ -56,6 +64,26 @@ input[type=file] { display: none; }
 
   <div class="card">
     <input type="text" class="title-input" id="boxName" value="{{.Box.Name}}" placeholder="Box name">
+  </div>
+
+  <div class="card exterior-section">
+    <div class="card-label">📸 Exterior</div>
+    {{if .Box.ExteriorFilename}}
+    <div class="exterior-preview">
+      <img src="/uploads/{{.Box.ExteriorFilename}}" alt="Box exterior">
+    </div>
+    <div class="exterior-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('exteriorCamera').click()">📷 Retake</button>
+      <button class="btn btn-outline" onclick="document.getElementById('exteriorFile').click()">🖼️ Replace</button>
+    </div>
+    {{else}}
+    <div class="exterior-placeholder" onclick="document.getElementById('exteriorCamera').click()">
+      <span style="font-size:28px;">📸</span>
+      <span>Tap to photograph the exterior</span>
+    </div>
+    {{end}}
+    <input type="file" id="exteriorCamera" accept="image/*" capture="environment" onchange="uploadExterior(this)" style="display:none;">
+    <input type="file" id="exteriorFile" accept="image/*" onchange="uploadExterior(this)" style="display:none;">
   </div>
 
   <div class="card">
@@ -94,12 +122,21 @@ input[type=file] { display: none; }
     <div class="card-label">⚙️ Settings</div>
     <div class="settings-row">
       <label>Max photos (N)</label>
-      <input type="number" id="maxPhotos" value="{{.Box.MaxPhotos}}" min="3" max="500" onchange="saveSetting()">
+      <select id="maxPhotosMode" onchange="onSettingModeChange()">
+        <option value="default" {{if eq .Box.MaxPhotosRaw 0}}selected{{end}}>App default ({{.Settings.DefaultMaxPhotos}})</option>
+        <option value="custom" {{if ne .Box.MaxPhotosRaw 0}}selected{{end}}>Custom</option>
+      </select>
+      <input type="number" id="maxPhotos" value="{{.Box.MaxPhotos}}" min="3" max="500" onchange="saveSetting()" style="{{if eq .Box.MaxPhotosRaw 0}}display:none{{end}}">
     </div>
     <div class="settings-row">
       <label>Protect recent (M)</label>
-      <input type="number" id="protectRecent" value="{{.Box.ProtectRecent}}" min="1" max="50" onchange="saveSetting()">
+      <select id="protectRecentMode" onchange="onSettingModeChange()">
+        <option value="default" {{if eq .Box.ProtectRecentRaw 0}}selected{{end}}>App default ({{.Settings.DefaultProtectRecent}})</option>
+        <option value="custom" {{if ne .Box.ProtectRecentRaw 0}}selected{{end}}>Custom</option>
+      </select>
+      <input type="number" id="protectRecent" value="{{.Box.ProtectRecent}}" min="1" max="50" onchange="saveSetting()" style="{{if eq .Box.ProtectRecentRaw 0}}display:none{{end}}">
     </div>
+    <div class="settings-hint">Set to "App default" to inherit from <a href="/settings">global settings</a>.</div>
   </div>
 
   <div id="nfcMsg" class="success-msg"></div>
@@ -154,14 +191,32 @@ function doSave() {
 document.getElementById('boxName').addEventListener('input', schedSave);
 document.getElementById('boxMemo').addEventListener('input', schedSave);
 
+function onSettingModeChange() {
+  const mpMode = document.getElementById('maxPhotosMode').value;
+  const prMode = document.getElementById('protectRecentMode').value;
+  document.getElementById('maxPhotos').style.display = mpMode === 'custom' ? '' : 'none';
+  document.getElementById('protectRecent').style.display = prMode === 'custom' ? '' : 'none';
+  saveSetting();
+}
 function saveSetting() {
-  const max_photos = parseInt(document.getElementById('maxPhotos').value);
-  const protect_recent = parseInt(document.getElementById('protectRecent').value);
+  const mpMode = document.getElementById('maxPhotosMode').value;
+  const prMode = document.getElementById('protectRecentMode').value;
+  const max_photos = mpMode === 'default' ? 0 : parseInt(document.getElementById('maxPhotos').value);
+  const protect_recent = prMode === 'default' ? 0 : parseInt(document.getElementById('protectRecent').value);
   fetch('/api/boxes/' + BOX_ID, {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({max_photos, protect_recent})
   });
+}
+
+// Exterior upload
+function uploadExterior(input) {
+  if (!input.files.length) return;
+  const fd = new FormData();
+  fd.append('photo', input.files[0]);
+  fetch('/api/boxes/' + BOX_ID + '/exterior', { method: 'POST', body: fd })
+    .then(() => location.reload());
 }
 
 // Photo upload

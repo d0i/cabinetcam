@@ -29,16 +29,24 @@ type Server struct {
 	UploadsDir   string
 }
 
+type AppSettings struct {
+	DefaultMaxPhotos    int
+	DefaultProtectRecent int
+}
+
 type Box struct {
-	ID           string
-	Name         string
-	Memo         string
-	MaxPhotos    int
-	ProtectRecent int
-	Archived     bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	PhotoCount   int
+	ID               string
+	Name             string
+	Memo             string
+	MaxPhotosRaw     int // 0 = use app default
+	ProtectRecentRaw int // 0 = use app default
+	MaxPhotos        int // resolved (after applying defaults)
+	ProtectRecent    int // resolved
+	ExteriorFilename string
+	Archived         bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	PhotoCount       int
 }
 
 type Photo struct {
@@ -96,8 +104,12 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/boxes/{id}/restore", s.handleRestoreBox)
 	mux.HandleFunc("DELETE /api/boxes/{id}", s.handleDeleteBox)
 	mux.HandleFunc("POST /api/boxes/{id}/photos", s.handleUploadPhoto)
+	mux.HandleFunc("POST /api/boxes/{id}/exterior", s.handleUploadExterior)
 	mux.HandleFunc("DELETE /api/photos/{id}", s.handleDeletePhoto)
 	mux.HandleFunc("GET /api/roll", s.handleAPIRoll)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	mux.HandleFunc("GET /settings", s.handleSettingsPage)
 
 	// Static & uploads
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
@@ -143,8 +155,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	settings := s.getAppSettings()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.renderTemplate(w, "home.html", map[string]any{"Boxes": boxes})
+	s.renderTemplate(w, "home.html", map[string]any{"Boxes": boxes, "Settings": settings})
 }
 
 func (s *Server) handleBoxDetail(w http.ResponseWriter, r *http.Request) {
@@ -159,8 +172,9 @@ func (s *Server) handleBoxDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	settings := s.getAppSettings()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.renderTemplate(w, "box.html", map[string]any{"Box": box, "Photos": photos})
+	s.renderTemplate(w, "box.html", map[string]any{"Box": box, "Photos": photos, "Settings": settings})
 }
 
 func (s *Server) handleArchived(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +190,12 @@ func (s *Server) handleArchived(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCameraRoll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	s.renderTemplate(w, "roll.html", nil)
+}
+
+func (s *Server) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
+	settings := s.getAppSettings()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	s.renderTemplate(w, "settings.html", map[string]any{"Settings": settings})
 }
 
 // --- API handlers ---
@@ -215,10 +235,10 @@ func (s *Server) handleUpdateBox(w http.ResponseWriter, r *http.Request) {
 	if payload.Memo != nil {
 		s.DB.Exec("UPDATE boxes SET memo=?, updated_at=? WHERE id=?", *payload.Memo, time.Now(), id)
 	}
-	if payload.MaxPhotos != nil && *payload.MaxPhotos >= 3 {
+	if payload.MaxPhotos != nil && *payload.MaxPhotos >= 0 {
 		s.DB.Exec("UPDATE boxes SET max_photos=?, updated_at=? WHERE id=?", *payload.MaxPhotos, time.Now(), id)
 	}
-	if payload.ProtectRecent != nil && *payload.ProtectRecent >= 1 {
+	if payload.ProtectRecent != nil && *payload.ProtectRecent >= 0 {
 		s.DB.Exec("UPDATE boxes SET protect_recent=?, updated_at=? WHERE id=?", *payload.ProtectRecent, time.Now(), id)
 	}
 	w.WriteHeader(200)
@@ -239,6 +259,11 @@ func (s *Server) handleRestoreBox(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteBox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Delete exterior
+	box, _ := s.getBox(id)
+	if box != nil && box.ExteriorFilename != "" {
+		os.Remove(filepath.Join(s.UploadsDir, box.ExteriorFilename))
+	}
 	// Delete photo files
 	photos, _ := s.getBoxPhotos(id)
 	for _, p := range photos {
@@ -300,6 +325,74 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": photoID, "filename": filename})
 }
 
+func (s *Server) handleUploadExterior(w http.ResponseWriter, r *http.Request) {
+	boxID := r.PathValue("id")
+	box, err := s.getBox(boxID)
+	if err != nil {
+		http.Error(w, "box not found", 404)
+		return
+	}
+
+	r.ParseMultipartForm(32 << 20)
+	file, header, err := r.FormFile("photo")
+	if err != nil {
+		http.Error(w, "no file", 400)
+		return
+	}
+	defer file.Close()
+
+	ext := filepath.Ext(header.Filename)
+	if ext == "" {
+		ext = ".jpg"
+	}
+
+	filename := "ext_" + generateID() + ext
+	dstPath := filepath.Join(s.UploadsDir, filename)
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		http.Error(w, "save failed", 500)
+		return
+	}
+	defer dst.Close()
+	io.Copy(dst, file)
+
+	// Remove old exterior
+	if box.ExteriorFilename != "" {
+		os.Remove(filepath.Join(s.UploadsDir, box.ExteriorFilename))
+	}
+
+	s.DB.Exec("UPDATE boxes SET exterior_filename=?, updated_at=? WHERE id=?", filename, time.Now(), boxID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"filename": filename})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	settings := s.getAppSettings()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(settings)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		DefaultMaxPhotos     *int `json:"default_max_photos"`
+		DefaultProtectRecent *int `json:"default_protect_recent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if payload.DefaultMaxPhotos != nil && *payload.DefaultMaxPhotos >= 3 {
+		s.DB.Exec("UPDATE app_settings SET default_max_photos=? WHERE id=1", *payload.DefaultMaxPhotos)
+	}
+	if payload.DefaultProtectRecent != nil && *payload.DefaultProtectRecent >= 1 {
+		s.DB.Exec("UPDATE app_settings SET default_protect_recent=? WHERE id=1", *payload.DefaultProtectRecent)
+	}
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var filename string
@@ -326,6 +419,31 @@ func (s *Server) handleAPIRoll(w http.ResponseWriter, r *http.Request) {
 
 // --- DB helpers ---
 
+func (s *Server) getAppSettings() AppSettings {
+	var settings AppSettings
+	err := s.DB.QueryRow("SELECT default_max_photos, default_protect_recent FROM app_settings WHERE id=1").Scan(
+		&settings.DefaultMaxPhotos, &settings.DefaultProtectRecent,
+	)
+	if err != nil {
+		// Fallback defaults
+		settings.DefaultMaxPhotos = 32
+		settings.DefaultProtectRecent = 3
+	}
+	return settings
+}
+
+func (s *Server) resolveBox(b *Box) {
+	settings := s.getAppSettings()
+	b.MaxPhotosRaw = b.MaxPhotos
+	b.ProtectRecentRaw = b.ProtectRecent
+	if b.MaxPhotos == 0 {
+		b.MaxPhotos = settings.DefaultMaxPhotos
+	}
+	if b.ProtectRecent == 0 {
+		b.ProtectRecent = settings.DefaultProtectRecent
+	}
+}
+
 func (s *Server) listBoxes(archived bool) ([]Box, error) {
 	archVal := 0
 	if archived {
@@ -333,6 +451,7 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 	}
 	rows, err := s.DB.Query(`
 		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
+		       b.exterior_filename,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.archived=? ORDER BY b.updated_at DESC`, archVal)
 	if err != nil {
@@ -343,11 +462,12 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 	for rows.Next() {
 		var b Box
 		var arch int
-		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.PhotoCount)
+		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.ExteriorFilename, &b.PhotoCount)
 		if err != nil {
 			return nil, err
 		}
 		b.Archived = arch == 1
+		s.resolveBox(&b)
 		boxes = append(boxes, b)
 	}
 	return boxes, nil
@@ -358,14 +478,16 @@ func (s *Server) getBox(id string) (*Box, error) {
 	var arch int
 	err := s.DB.QueryRow(`
 		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
+		       b.exterior_filename,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.id=?`, id).Scan(
-		&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.PhotoCount,
+		&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.ExteriorFilename, &b.PhotoCount,
 	)
 	if err != nil {
 		return nil, err
 	}
 	b.Archived = arch == 1
+	s.resolveBox(&b)
 	return &b, nil
 }
 

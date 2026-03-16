@@ -18,8 +18,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .btn-success { background: #4caf50; color: #fff; }
 .btn-danger { background: #fff; color: #f44336; border: 1.5px solid #f44336; }
 .btn-full { display: block; width: 100%; padding: 14px; text-align: center; }
-.card { background: #fff; border-radius: 8px; padding: 14px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; text-decoration: none; display: block; color: inherit; }
+.card { background: #fff; border-radius: 8px; padding: 14px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; text-decoration: none; display: flex; gap: 12px; align-items: center; color: inherit; }
 .card:active { background: #f8f8f8; }
+.card-thumb { width: 56px; height: 56px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: #eee; }
+.card-thumb-placeholder { width: 56px; height: 56px; border-radius: 6px; background: #eee; display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0; }
+.card-body { flex: 1; min-width: 0; }
 .card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
 .card-meta { font-size: 13px; color: #999; }
 .card-memo { font-size: 13px; color: #666; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -55,15 +58,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 
   <div class="nav-links">
     <a href="/archived" class="nav-link">📁 Archived Boxes</a>
+    <a href="/settings" class="nav-link">⚙️ Settings</a>
   </div>
 
   <div id="boxList">
     {{if .Boxes}}
     {{range .Boxes}}
     <a href="/box/{{.ID}}" class="card box-card" data-name="{{.Name}}" data-memo="{{.Memo}}">
-      <div class="card-title">📦 {{.Name}}</div>
-      <div class="card-meta">📷 {{.PhotoCount}} photos · Updated {{timeFormat .UpdatedAt}}</div>
-      {{if .Memo}}<div class="card-memo">{{.Memo}}</div>{{end}}
+      {{if .ExteriorFilename}}<img class="card-thumb" src="/uploads/{{.ExteriorFilename}}" alt="">{{else}}<div class="card-thumb-placeholder">📦</div>{{end}}
+      <div class="card-body">
+        <div class="card-title">{{.Name}}</div>
+        <div class="card-meta">📷 {{.PhotoCount}} photos · Updated {{timeFormat .UpdatedAt}}</div>
+        {{if .Memo}}<div class="card-memo">{{.Memo}}</div>{{end}}
+      </div>
     </a>
     {{end}}
     {{else}}
