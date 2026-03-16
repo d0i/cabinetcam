@@ -1,10 +1,10 @@
 .PHONY: build clean stop start restart test
 
 build:
-	go build -o srv ./cmd/srv
+	go build -o cabinetcam ./cmd/srv
 
 clean:
-	rm -f srv
+	rm -f cabinetcam
 
 test:
 	go test ./...

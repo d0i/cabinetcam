@@ -210,36 +210,65 @@ let currentLightbox = -1;
 // --- File input listeners (using <label for> + change event) ---
 document.getElementById('cameraInput').addEventListener('change', function() {
   if (!this.files.length) return;
-  doUpload(this.files[0]).then(() => location.reload());
-  this.value = '';
+  doUpload(this.files[0]).then(() => location.reload()).catch(err => alert('Upload failed: ' + err.message));
 });
 document.getElementById('fileInput').addEventListener('change', function() {
   if (!this.files.length) return;
-  const promises = Array.from(this.files).map(f => doUpload(f));
-  Promise.all(promises).then(() => location.reload());
-  this.value = '';
+  Promise.all(Array.from(this.files).map(f => doUpload(f)))
+    .then(() => location.reload()).catch(err => alert('Upload failed: ' + err.message));
 });
 document.getElementById('exteriorCamera').addEventListener('change', function() {
   if (!this.files.length) return;
   doExteriorUpload(this.files[0]);
-  this.value = '';
 });
 document.getElementById('exteriorFile').addEventListener('change', function() {
   if (!this.files.length) return;
   doExteriorUpload(this.files[0]);
-  this.value = '';
 });
 
+// Resize image client-side before upload (phone cameras produce 5MB+ files)
+function resizeImage(file, maxDim, quality) {
+  maxDim = maxDim || 1600;
+  quality = quality || 0.85;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = function() {
+      let w = img.width, h = img.height;
+      if (w <= maxDim && h <= maxDim && file.size < 500000) {
+        URL.revokeObjectURL(img.src);
+        resolve(file);
+        return;
+      }
+      if (w > h) { if (w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; } }
+      else { if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; } }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(img.src);
+      canvas.toBlob(function(blob) {
+        if (!blob) { reject(new Error('Canvas toBlob failed')); return; }
+        resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = function() { URL.revokeObjectURL(img.src); resolve(file); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 function doUpload(file) {
-  const fd = new FormData();
-  fd.append('photo', file);
-  return fetch('/api/boxes/' + BOX_ID + '/photos', { method: 'POST', body: fd });
+  return resizeImage(file, 1600, 0.85).then(resized => {
+    const fd = new FormData();
+    fd.append('photo', resized);
+    return fetch('/api/boxes/' + BOX_ID + '/photos', { method: 'POST', body: fd });
+  });
 }
 function doExteriorUpload(file) {
-  const fd = new FormData();
-  fd.append('photo', file);
-  fetch('/api/boxes/' + BOX_ID + '/exterior', { method: 'POST', body: fd })
-    .then(() => location.reload());
+  resizeImage(file, 1600, 0.85).then(resized => {
+    const fd = new FormData();
+    fd.append('photo', resized);
+    return fetch('/api/boxes/' + BOX_ID + '/exterior', { method: 'POST', body: fd });
+  }).then(() => location.reload()).catch(err => alert('Exterior upload failed: ' + err.message));
 }
 
 // --- Auto-save name & memo ---
