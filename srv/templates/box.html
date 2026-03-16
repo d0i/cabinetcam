@@ -9,8 +9,6 @@
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; -webkit-tap-highlight-color: transparent; }
 .container { max-width: 600px; margin: 0 auto; padding: 16px; }
 .back-link { display: inline-block; font-size: 14px; color: #1976d2; text-decoration: none; margin-bottom: 12px; }
-.header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-.header h1 { font-size: 20px; flex: 1; }
 .title-input { font-size: 20px; font-weight: 700; border: none; background: transparent; width: 100%; padding: 4px 0; border-bottom: 2px solid transparent; }
 .title-input:focus { outline: none; border-bottom-color: #1976d2; }
 .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -51,16 +49,44 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .lightbox-nav { display: flex; gap: 16px; margin-top: 12px; }
 .lightbox-nav button { background: rgba(255,255,255,0.2); color: #fff; border: none; border-radius: 8px; padding: 8px 20px; font-size: 14px; cursor: pointer; }
 .lightbox-delete { background: rgba(244,67,54,0.8) !important; }
-.nfc-section { margin-top: 8px; }
-.success-msg { background: #e8f5e9; color: #4caf50; border: 1px solid #a5d6a7; border-radius: 8px; padding: 10px; font-size: 13px; margin-top: 8px; display: none; }
-.error-msg { background: #ffebee; color: #f44336; border: 1px solid #ef9a9a; border-radius: 8px; padding: 10px; font-size: 13px; margin-top: 8px; display: none; }
-input[type=file] { display: none; }
-.archive-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; }
+.archive-banner { background: #fff3e0; border: 1.5px solid #ffcc02; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+.archive-banner-icon { font-size: 22px; flex-shrink: 0; }
+.archive-banner-body { flex: 1; font-size: 13px; color: #666; }
+.archive-banner-body strong { color: #e65100; }
+.archive-banner .btn { flex-shrink: 0; font-size: 13px; padding: 8px 14px; }
+/* NFC modal */
+.nfc-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 100; align-items: center; justify-content: center; }
+.nfc-overlay.show { display: flex; }
+.nfc-modal { background: #fff; border-radius: 12px; padding: 24px; max-width: 380px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.2); text-align: center; }
+.nfc-modal h3 { margin-bottom: 8px; font-size: 18px; }
+.nfc-modal .nfc-url { font-size: 12px; color: #999; word-break: break-all; margin-bottom: 16px; background: #f5f5f5; padding: 8px; border-radius: 6px; }
+.nfc-modal .nfc-status { margin: 16px 0; font-size: 14px; min-height: 48px; display: flex; align-items: center; justify-content: center; }
+.nfc-modal .nfc-warn { font-size: 11px; color: #999; margin-bottom: 16px; }
+.nfc-status-idle { color: #666; }
+.nfc-status-waiting { color: #1976d2; }
+.nfc-status-success { color: #4caf50; }
+.nfc-status-error { color: #f44336; }
+.nfc-modal-actions { display: flex; gap: 8px; justify-content: center; }
+/* Hidden file inputs — use offscreen positioning, not display:none */
+.file-input-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); opacity: 0; }
 </style>
 </head>
 <body>
 <div class="container">
   <a href="/" class="back-link">← All Boxes</a>
+
+  {{if not .Box.Archived}}
+  {{else}}
+  <div class="archive-banner">
+    <div class="archive-banner-icon">📁</div>
+    <div class="archive-banner-body">
+      <strong>This box is archived.</strong><br>Photos are excluded from the camera roll.
+    </div>
+    <form method="POST" action="/api/boxes/{{.Box.ID}}/restore" style="margin:0;">
+      <button type="submit" class="btn btn-primary">↩️ Restore</button>
+    </form>
+  </div>
+  {{end}}
 
   <div class="card">
     <input type="text" class="title-input" id="boxName" value="{{.Box.Name}}" placeholder="Box name">
@@ -73,17 +99,17 @@ input[type=file] { display: none; }
       <img src="/uploads/{{.Box.ExteriorFilename}}" alt="Box exterior">
     </div>
     <div class="exterior-actions">
-      <button class="btn btn-outline" onclick="document.getElementById('exteriorCamera').click()">📷 Retake</button>
-      <button class="btn btn-outline" onclick="document.getElementById('exteriorFile').click()">🖼️ Replace</button>
+      <label class="btn btn-outline" for="exteriorCamera">📷 Retake</label>
+      <label class="btn btn-outline" for="exteriorFile">🖼️ Replace</label>
     </div>
     {{else}}
-    <div class="exterior-placeholder" onclick="document.getElementById('exteriorCamera').click()">
+    <label class="exterior-placeholder" for="exteriorCamera">
       <span style="font-size:28px;">📸</span>
       <span>Tap to photograph the exterior</span>
-    </div>
+    </label>
     {{end}}
-    <input type="file" id="exteriorCamera" accept="image/*" capture="environment" onchange="uploadExterior(this)" style="display:none;">
-    <input type="file" id="exteriorFile" accept="image/*" onchange="uploadExterior(this)" style="display:none;">
+    <input type="file" id="exteriorCamera" class="file-input-hidden" accept="image/*" capture="environment">
+    <input type="file" id="exteriorFile" class="file-input-hidden" accept="image/*">
   </div>
 
   <div class="card">
@@ -93,12 +119,12 @@ input[type=file] { display: none; }
   </div>
 
   <div class="actions">
-    <button class="btn btn-primary" onclick="document.getElementById('cameraInput').click()">📷 Take Photo</button>
-    <button class="btn btn-outline" onclick="document.getElementById('fileInput').click()">🖼️ Browse</button>
-    <button class="btn btn-outline" id="nfcBtn" onclick="writeNFC()">📱 Write NFC</button>
+    <label class="btn btn-primary" for="cameraInput">📷 Take Photo</label>
+    <label class="btn btn-outline" for="fileInput">🖼️ Browse</label>
+    <button class="btn btn-outline" id="nfcBtn" onclick="openNfcModal()">📱 Write NFC</button>
   </div>
-  <input type="file" id="cameraInput" accept="image/*" capture="environment" onchange="uploadPhoto(this)">
-  <input type="file" id="fileInput" accept="image/*" multiple onchange="uploadPhotos(this)">
+  <input type="file" id="cameraInput" class="file-input-hidden" accept="image/*" capture="environment">
+  <input type="file" id="fileInput" class="file-input-hidden" accept="image/*" multiple>
 
   <div class="card">
     <div class="card-label">📷 Photos <span class="photo-count">({{len .Photos}}/{{.Box.MaxPhotos}})</span></div>
@@ -139,22 +165,32 @@ input[type=file] { display: none; }
     <div class="settings-hint">Set to "App default" to inherit from <a href="/settings">global settings</a>.</div>
   </div>
 
-  <div id="nfcMsg" class="success-msg"></div>
-  <div id="nfcErr" class="error-msg"></div>
-
-  <div class="archive-section">
-    {{if .Box.Archived}}
-    <form method="POST" action="/api/boxes/{{.Box.ID}}/restore">
-      <button type="submit" class="btn btn-success btn-full">↩️ Restore Box</button>
-    </form>
-    {{else}}
+  {{if not .Box.Archived}}
+  <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee;">
     <form method="POST" action="/api/boxes/{{.Box.ID}}/archive" onsubmit="return confirm('Archive this box? Photos will be excluded from the camera roll.')">
       <button type="submit" class="btn btn-warning btn-full">📁 Archive Box</button>
     </form>
-    {{end}}
+  </div>
+  {{end}}
+</div>
+
+<!-- NFC Modal -->
+<div class="nfc-overlay" id="nfcOverlay" onclick="if(event.target===this)closeNfcModal()">
+  <div class="nfc-modal">
+    <h3>📱 Write NFC Tag</h3>
+    <div class="nfc-url" id="nfcUrl"></div>
+    <div class="nfc-warn">⚠️ This will overwrite any existing data on the NFC tag.</div>
+    <div class="nfc-status" id="nfcStatus">
+      <span class="nfc-status-idle">Tap the button below, then hold your phone against the NFC tag.</span>
+    </div>
+    <div class="nfc-modal-actions">
+      <button class="btn btn-outline" onclick="closeNfcModal()">Cancel</button>
+      <button class="btn btn-primary" id="nfcWriteBtn" onclick="startNfcWrite()">Start Writing</button>
+    </div>
   </div>
 </div>
 
+<!-- Lightbox -->
 <div class="lightbox" id="lightbox" onclick="if(event.target===this)closeLightbox()">
   <button class="lightbox-close" onclick="closeLightbox()">✕</button>
   <img id="lightboxImg" src="" alt="">
@@ -171,7 +207,42 @@ const BOX_ID = '{{.Box.ID}}';
 let saveTimer = null;
 let currentLightbox = -1;
 
-// Auto-save name & memo
+// --- File input listeners (using <label for> + change event) ---
+document.getElementById('cameraInput').addEventListener('change', function() {
+  if (!this.files.length) return;
+  doUpload(this.files[0]).then(() => location.reload());
+  this.value = '';
+});
+document.getElementById('fileInput').addEventListener('change', function() {
+  if (!this.files.length) return;
+  const promises = Array.from(this.files).map(f => doUpload(f));
+  Promise.all(promises).then(() => location.reload());
+  this.value = '';
+});
+document.getElementById('exteriorCamera').addEventListener('change', function() {
+  if (!this.files.length) return;
+  doExteriorUpload(this.files[0]);
+  this.value = '';
+});
+document.getElementById('exteriorFile').addEventListener('change', function() {
+  if (!this.files.length) return;
+  doExteriorUpload(this.files[0]);
+  this.value = '';
+});
+
+function doUpload(file) {
+  const fd = new FormData();
+  fd.append('photo', file);
+  return fetch('/api/boxes/' + BOX_ID + '/photos', { method: 'POST', body: fd });
+}
+function doExteriorUpload(file) {
+  const fd = new FormData();
+  fd.append('photo', file);
+  fetch('/api/boxes/' + BOX_ID + '/exterior', { method: 'POST', body: fd })
+    .then(() => location.reload());
+}
+
+// --- Auto-save name & memo ---
 function schedSave() {
   if (saveTimer) clearTimeout(saveTimer);
   document.getElementById('saveStatus').textContent = 'Saving...';
@@ -191,6 +262,7 @@ function doSave() {
 document.getElementById('boxName').addEventListener('input', schedSave);
 document.getElementById('boxMemo').addEventListener('input', schedSave);
 
+// --- Settings ---
 function onSettingModeChange() {
   const mpMode = document.getElementById('maxPhotosMode').value;
   const prMode = document.getElementById('protectRecentMode').value;
@@ -210,31 +282,7 @@ function saveSetting() {
   });
 }
 
-// Exterior upload
-function uploadExterior(input) {
-  if (!input.files.length) return;
-  const fd = new FormData();
-  fd.append('photo', input.files[0]);
-  fetch('/api/boxes/' + BOX_ID + '/exterior', { method: 'POST', body: fd })
-    .then(() => location.reload());
-}
-
-// Photo upload
-function uploadPhoto(input) {
-  if (!input.files.length) return;
-  doUpload(input.files[0]).then(() => location.reload());
-}
-function uploadPhotos(input) {
-  const promises = Array.from(input.files).map(f => doUpload(f));
-  Promise.all(promises).then(() => location.reload());
-}
-function doUpload(file) {
-  const fd = new FormData();
-  fd.append('photo', file);
-  return fetch('/api/boxes/' + BOX_ID + '/photos', { method: 'POST', body: fd });
-}
-
-// Lightbox
+// --- Lightbox ---
 function getThumbEls() { return document.querySelectorAll('.photo-thumb'); }
 function openLightbox(idx) {
   const thumbs = getThumbEls();
@@ -249,9 +297,7 @@ function closeLightbox() {
   document.getElementById('lightbox').classList.remove('show');
   currentLightbox = -1;
 }
-function navLightbox(dir) {
-  openLightbox(currentLightbox + dir);
-}
+function navLightbox(dir) { openLightbox(currentLightbox + dir); }
 function deleteCurrentPhoto() {
   if (currentLightbox < 0) return;
   if (!confirm('Delete this photo?')) return;
@@ -260,27 +306,46 @@ function deleteCurrentPhoto() {
   fetch('/api/photos/' + id, { method: 'DELETE' }).then(() => location.reload());
 }
 
-// NFC
-async function writeNFC() {
-  const msgEl = document.getElementById('nfcMsg');
-  const errEl = document.getElementById('nfcErr');
-  msgEl.style.display = 'none';
-  errEl.style.display = 'none';
+// --- NFC ---
+function openNfcModal() {
+  const url = location.origin + '/box/' + BOX_ID;
+  document.getElementById('nfcUrl').textContent = url;
+  document.getElementById('nfcStatus').innerHTML =
+    '<span class="nfc-status-idle">Tap <b>Start Writing</b>, then hold your phone against the NFC tag.</span>';
+  document.getElementById('nfcWriteBtn').disabled = false;
+  document.getElementById('nfcWriteBtn').textContent = 'Start Writing';
+  document.getElementById('nfcOverlay').classList.add('show');
+}
+function closeNfcModal() {
+  document.getElementById('nfcOverlay').classList.remove('show');
+}
+async function startNfcWrite() {
+  const statusEl = document.getElementById('nfcStatus');
+  const writeBtn = document.getElementById('nfcWriteBtn');
 
   if (!('NDEFReader' in window)) {
-    errEl.textContent = 'Web NFC is not supported on this browser. Use Chrome on Android.';
-    errEl.style.display = 'block';
+    statusEl.innerHTML = '<span class="nfc-status-error">❌ Web NFC is not supported on this browser.<br>Use <b>Chrome on Android</b> with NFC enabled.</span>';
     return;
   }
+
+  writeBtn.disabled = true;
+  writeBtn.textContent = 'Waiting...';
+  statusEl.innerHTML = '<span class="nfc-status-waiting">📡 Ready to write — hold your phone against the NFC tag now...</span>';
+
   try {
     const url = location.origin + '/box/' + BOX_ID;
     const ndef = new NDEFReader();
     await ndef.write({ records: [{ recordType: 'url', data: url }] });
-    msgEl.textContent = '✓ NFC tag written with: ' + url;
-    msgEl.style.display = 'block';
+    statusEl.innerHTML = '<span class="nfc-status-success">✅ Tag written successfully!<br>The tag now opens this box.</span>';
+    writeBtn.textContent = 'Done';
   } catch (e) {
-    errEl.textContent = 'NFC write failed: ' + e.message;
-    errEl.style.display = 'block';
+    if (e.name === 'AbortError' || e.message.includes('cancel')) {
+      statusEl.innerHTML = '<span class="nfc-status-idle">Write cancelled.</span>';
+    } else {
+      statusEl.innerHTML = '<span class="nfc-status-error">❌ ' + e.message + '</span>';
+    }
+    writeBtn.disabled = false;
+    writeBtn.textContent = 'Retry';
   }
 }
 </script>
