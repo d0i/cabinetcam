@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🔍 Camera Roll - CabinetCam</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; -webkit-tap-highlight-color: transparent; }
+.container { max-width: 600px; margin: 0 auto; padding: 16px; }
+.back-link { display: inline-block; font-size: 14px; color: #1976d2; text-decoration: none; margin-bottom: 12px; }
+.header { margin-bottom: 16px; }
+.header h1 { font-size: 20px; }
+.search-bar { margin-bottom: 16px; }
+.search-bar input { width: 100%; padding: 10px 14px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; background: #fafafa; }
+.search-bar input:focus { outline: none; border-color: #1976d2; background: #fff; }
+.photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.photo-item { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; cursor: pointer; }
+.photo-item img { width: 100%; height: 100%; object-fit: cover; }
+.photo-overlay { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; padding: 3px 5px; }
+.photo-overlay .box-name { font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.photo-overlay .photo-time { font-size: 9px; opacity: 0.8; }
+.empty { text-align: center; padding: 40px 20px; color: #999; }
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.lightbox { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); z-index: 200; flex-direction: column; align-items: center; justify-content: center; }
+.lightbox.show { display: flex; }
+.lightbox img { max-width: 100%; max-height: 75vh; object-fit: contain; }
+.lightbox-close { position: absolute; top: 16px; right: 16px; color: #fff; font-size: 28px; cursor: pointer; background: none; border: none; z-index: 201; }
+.lightbox-info { color: #fff; font-size: 13px; margin-top: 12px; text-align: center; }
+.lightbox-info a { color: #64b5f6; text-decoration: none; }
+.lightbox-nav { display: flex; gap: 16px; margin-top: 12px; }
+.lightbox-nav button { background: rgba(255,255,255,0.2); color: #fff; border: none; border-radius: 8px; padding: 8px 20px; font-size: 14px; cursor: pointer; }
+.loading { text-align: center; padding: 20px; color: #999; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a href="/" class="back-link">← All Boxes</a>
+  <div class="header">
+    <h1>🔍 Camera Roll</h1>
+  </div>
+
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="🔍 Search by box name or memo..." oninput="schedSearch()">
+  </div>
+
+  <div class="photo-grid" id="photoGrid"></div>
+  <div class="empty" id="emptyMsg" style="display:none;">
+    <div class="empty-icon">📷</div>
+    <p>No photos found.</p>
+  </div>
+  <div class="loading" id="loading">Loading...</div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="if(event.target===this)closeLB()">
+  <button class="lightbox-close" onclick="closeLB()">✕</button>
+  <img id="lbImg" src="" alt="">
+  <div class="lightbox-info" id="lbInfo"></div>
+  <div class="lightbox-nav">
+    <button onclick="navLB(-1)">◀ Prev</button>
+    <button onclick="navLB(1)">Next ▶</button>
+  </div>
+</div>
+
+<script>
+let photos = [];
+let currentLB = -1;
+let searchTimer = null;
+
+function schedSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadPhotos, 400);
+}
+
+async function loadPhotos() {
+  const q = document.getElementById('searchInput').value.trim();
+  const url = '/api/roll' + (q ? '?q=' + encodeURIComponent(q) : '');
+  try {
+    const resp = await fetch(url);
+    photos = await resp.json();
+    if (!photos) photos = [];
+    renderGrid();
+  } catch(e) {
+    console.error(e);
+  }
+  document.getElementById('loading').style.display = 'none';
+}
+
+function renderGrid() {
+  const grid = document.getElementById('photoGrid');
+  const empty = document.getElementById('emptyMsg');
+  if (!photos.length) {
+    grid.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+  grid.innerHTML = photos.map((p, i) => `
+    <div class="photo-item" onclick="openLB(${i})">
+      <img src="/uploads/${p.Filename}" loading="lazy" alt="">
+      <div class="photo-overlay">
+        <div class="box-name">📦 ${p.BoxName || ''}</div>
+        <div class="photo-time">${new Date(p.CapturedAt).toLocaleDateString()}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function openLB(idx) {
+  if (idx < 0 || idx >= photos.length) return;
+  currentLB = idx;
+  const p = photos[idx];
+  document.getElementById('lbImg').src = '/uploads/' + p.Filename;
+  document.getElementById('lbInfo').innerHTML =
+    '<a href="/box/' + p.BoxID + '">📦 ' + (p.BoxName||'') + '</a> · ' + new Date(p.CapturedAt).toLocaleString();
+  document.getElementById('lightbox').classList.add('show');
+}
+function closeLB() { document.getElementById('lightbox').classList.remove('show'); currentLB = -1; }
+function navLB(dir) { openLB(currentLB + dir); }
+
+loadPhotos();
+</script>
+</body>
+</html>

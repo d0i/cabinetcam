@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📦 CabinetCam</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; -webkit-tap-highlight-color: transparent; }
+.container { max-width: 600px; margin: 0 auto; padding: 16px; }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.header h1 { font-size: 20px; }
+.header-actions { display: flex; gap: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; }
+.btn:active { opacity: 0.7; }
+.btn-primary { background: #1976d2; color: #fff; }
+.btn-outline { background: #fff; color: #666; border: 1.5px solid #ddd; }
+.btn-success { background: #4caf50; color: #fff; }
+.btn-danger { background: #fff; color: #f44336; border: 1.5px solid #f44336; }
+.btn-full { display: block; width: 100%; padding: 14px; text-align: center; }
+.card { background: #fff; border-radius: 8px; padding: 14px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; text-decoration: none; display: block; color: inherit; }
+.card:active { background: #f8f8f8; }
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.card-meta { font-size: 13px; color: #999; }
+.card-memo { font-size: 13px; color: #666; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty { text-align: center; padding: 40px 20px; color: #999; }
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.search-bar { margin-bottom: 16px; }
+.search-bar input { width: 100%; padding: 10px 14px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; background: #fafafa; }
+.search-bar input:focus { outline: none; border-color: #1976d2; background: #fff; }
+.nav-links { display: flex; gap: 8px; margin-bottom: 16px; }
+.nav-link { font-size: 13px; color: #1976d2; text-decoration: none; padding: 6px 10px; border-radius: 6px; background: #e3f2fd; }
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 12px; padding: 24px; max-width: 400px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+.modal h3 { margin-bottom: 16px; font-size: 18px; }
+.modal input { width: 100%; padding: 10px 14px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; margin-bottom: 16px; background: #fafafa; }
+.modal input:focus { outline: none; border-color: #1976d2; background: #fff; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>📦 CabinetCam</h1>
+    <div class="header-actions">
+      <a href="/roll" class="btn btn-outline">🔍 Roll</a>
+      <button class="btn btn-primary" onclick="showNewBox()">＋ New Box</button>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="🔍 Search boxes..." oninput="filterBoxes()">
+  </div>
+
+  <div class="nav-links">
+    <a href="/archived" class="nav-link">📁 Archived Boxes</a>
+  </div>
+
+  <div id="boxList">
+    {{if .Boxes}}
+    {{range .Boxes}}
+    <a href="/box/{{.ID}}" class="card box-card" data-name="{{.Name}}" data-memo="{{.Memo}}">
+      <div class="card-title">📦 {{.Name}}</div>
+      <div class="card-meta">📷 {{.PhotoCount}} photos · Updated {{timeFormat .UpdatedAt}}</div>
+      {{if .Memo}}<div class="card-memo">{{.Memo}}</div>{{end}}
+    </a>
+    {{end}}
+    {{else}}
+    <div class="empty">
+      <div class="empty-icon">📦</div>
+      <p>No boxes yet. Create your first box!</p>
+    </div>
+    {{end}}
+  </div>
+</div>
+
+<div class="modal-overlay" id="newBoxModal" onclick="if(event.target===this)hideNewBox()">
+  <div class="modal">
+    <h3>📦 New Box</h3>
+    <form method="POST" action="/api/boxes">
+      <input type="text" name="name" placeholder="Box name (e.g. Kitchen Cabinet #1)" autofocus required>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="hideNewBox()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function showNewBox() { document.getElementById('newBoxModal').classList.add('show'); }
+function hideNewBox() { document.getElementById('newBoxModal').classList.remove('show'); }
+function filterBoxes() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  document.querySelectorAll('.box-card').forEach(c => {
+    const name = (c.dataset.name || '').toLowerCase();
+    const memo = (c.dataset.memo || '').toLowerCase();
+    c.style.display = (name.includes(q) || memo.includes(q)) ? '' : 'none';
+  });
+}
+</script>
+</body>
+</html>

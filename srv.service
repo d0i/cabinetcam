@@ -1,0 +1,14 @@
+[Unit]
+Description=CabinetCam
+After=network.target
+
+[Service]
+Type=simple
+User=exedev
+WorkingDirectory=/home/exedev/cabinetcam
+ExecStart=/home/exedev/cabinetcam/cabinetcam -listen :8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
