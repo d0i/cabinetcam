@@ -46,6 +46,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 
     <div class="save-status" id="saveStatus"></div>
   </div>
+
+  <div class="card">
+    <div class="card-label">📦 Export / Import</div>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;">Download all data as a ZIP file, or restore from a previous export.</p>
+
+    <a href="/api/export" class="btn btn-primary" style="display:inline-flex;margin-bottom:16px;">📦 Export All Data</a>
+
+    <div style="border-top:1px solid #eee;padding-top:14px;">
+      <div style="font-weight:600;font-size:14px;margin-bottom:8px;">📥 Import Data</div>
+      <input type="file" id="importFile" accept=".zip" style="font-size:14px;margin-bottom:10px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#666;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="importOverwrite">
+        Overwrite existing boxes with same ID
+      </label>
+      <button class="btn btn-outline" id="importBtn" onclick="doImport()" disabled>📥 Import</button>
+      <div id="importStatus" style="font-size:13px;margin-top:10px;"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -60,6 +78,49 @@ function saveSettings() {
     document.getElementById('saveStatus').textContent = '✓ Saved';
     setTimeout(() => document.getElementById('saveStatus').textContent = '', 2000);
   });
+}
+
+document.getElementById('importFile').addEventListener('change', function() {
+  document.getElementById('importBtn').disabled = !this.files.length;
+});
+
+function doImport() {
+  const fileInput = document.getElementById('importFile');
+  if (!fileInput.files.length) return;
+
+  const statusEl = document.getElementById('importStatus');
+  const btn = document.getElementById('importBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Importing...';
+  statusEl.textContent = '';
+  statusEl.style.color = '#666';
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('overwrite', document.getElementById('importOverwrite').checked ? 'true' : 'false');
+
+  fetch('/api/import', { method: 'POST', body: fd })
+    .then(resp => {
+      if (!resp.ok) return resp.text().then(t => { throw new Error(t); });
+      return resp.json();
+    })
+    .then(data => {
+      statusEl.style.color = '#4caf50';
+      let msg = '✅ Imported ' + data.imported_boxes + ' box' + (data.imported_boxes !== 1 ? 'es' : '') +
+                ' with ' + data.imported_photos + ' photo' + (data.imported_photos !== 1 ? 's' : '');
+      if (data.skipped_boxes > 0) {
+        msg += ' (' + data.skipped_boxes + ' skipped)';
+      }
+      statusEl.textContent = msg;
+      btn.textContent = '📥 Import';
+      btn.disabled = false;
+    })
+    .catch(err => {
+      statusEl.style.color = '#f44336';
+      statusEl.textContent = '❌ ' + err.message;
+      btn.textContent = '📥 Import';
+      btn.disabled = false;
+    });
 }
 </script>
 </body>

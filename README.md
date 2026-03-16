@@ -17,6 +17,7 @@ Designed to be used with NFC tags — stick a tag on each box, tap your phone to
 - **Archive/restore** — Archive boxes you're done with; photos are excluded from the camera roll
 - **Per-box settings** — Override max photos and protect-recent counts, or inherit app defaults
 - **Lightbox viewer** — Tap any photo to view full-size with navigation and delete
+- **Export/Import** — Download all data as a ZIP file, or restore from a previous export with optional overwrite
 
 ## Tech Stack
 
@@ -95,6 +96,8 @@ make build && sudo systemctl restart srv
 | GET | `/api/roll?q=search` | Get all photos as JSON |
 | GET | `/api/settings` | Get app settings |
 | PUT | `/api/settings` | Update app settings |
+| GET | `/api/export` | Download ZIP of all data |
+| POST | `/api/import` | Upload ZIP to import (form: `file`, `overwrite`) |
 
 ## Photo Thinning Algorithm
 
@@ -114,6 +117,22 @@ This naturally preserves a logarithmic spread: many recent photos and fewer old 
 
 **Per-box overrides** (on box detail page):
 - Set to "Custom" to override, or "App default" to inherit
+
+## Export/Import
+
+The export produces a self-contained ZIP file:
+
+```
+cabinetcam_export_20260316_123456.zip
+├── manifest.json          # all box/photo metadata + app settings
+├── photos/                # content photos
+│   ├── abc123.jpg
+│   └── ...
+└── exteriors/             # exterior photos
+    └── ext_xyz789.jpg
+```
+
+Import reads this ZIP and restores all boxes and photos. If a box with the same ID already exists, it can be skipped (default) or overwritten (optional checkbox).
 
 ## Design
 

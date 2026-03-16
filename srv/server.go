@@ -1,6 +1,8 @@
 package srv
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -109,6 +111,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/roll", s.handleAPIRoll)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	mux.HandleFunc("GET /api/export", s.handleExport)
+	mux.HandleFunc("POST /api/import", s.handleImport)
 	mux.HandleFunc("GET /settings", s.handleSettingsPage)
 
 	// Static & uploads
@@ -593,6 +597,275 @@ func (s *Server) thinPhotos(boxID string, maxPhotos, protectRecent int) {
 		os.Remove(filepath.Join(s.UploadsDir, victim.filename))
 		photos = append(photos[:victimIdx], photos[victimIdx+1:]...)
 	}
+}
+
+// --- Export/Import ---
+
+type ExportManifest struct {
+	Version     int               `json:"version"`
+	ExportedAt  time.Time         `json:"exported_at"`
+	AppSettings ExportAppSettings `json:"app_settings"`
+	Boxes       []ExportBox       `json:"boxes"`
+}
+
+type ExportAppSettings struct {
+	DefaultMaxPhotos     int `json:"default_max_photos"`
+	DefaultProtectRecent int `json:"default_protect_recent"`
+}
+
+type ExportBox struct {
+	ID               string        `json:"id"`
+	Name             string        `json:"name"`
+	Memo             string        `json:"memo"`
+	MaxPhotos        int           `json:"max_photos"`
+	ProtectRecent    int           `json:"protect_recent"`
+	Archived         bool          `json:"archived"`
+	ExteriorFilename string        `json:"exterior_filename"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	Photos           []ExportPhoto `json:"photos"`
+}
+
+type ExportPhoto struct {
+	ID         string    `json:"id"`
+	Filename   string    `json:"filename"`
+	CapturedAt time.Time `json:"captured_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	appSettings := s.getAppSettings()
+
+	activeBoxes, err := s.listBoxes(false)
+	if err != nil {
+		http.Error(w, "failed to list boxes", 500)
+		return
+	}
+	archivedBoxes, err := s.listBoxes(true)
+	if err != nil {
+		http.Error(w, "failed to list boxes", 500)
+		return
+	}
+	allBoxes := append(activeBoxes, archivedBoxes...)
+
+	manifest := ExportManifest{
+		Version:    1,
+		ExportedAt: time.Now().UTC(),
+		AppSettings: ExportAppSettings{
+			DefaultMaxPhotos:     appSettings.DefaultMaxPhotos,
+			DefaultProtectRecent: appSettings.DefaultProtectRecent,
+		},
+		Boxes: make([]ExportBox, 0, len(allBoxes)),
+	}
+
+	for _, box := range allBoxes {
+		photos, err := s.getBoxPhotos(box.ID)
+		if err != nil {
+			http.Error(w, "failed to get photos", 500)
+			return
+		}
+		exportPhotos := make([]ExportPhoto, len(photos))
+		for i, p := range photos {
+			exportPhotos[i] = ExportPhoto{
+				ID: p.ID, Filename: p.Filename,
+				CapturedAt: p.CapturedAt, CreatedAt: p.CreatedAt,
+			}
+		}
+		manifest.Boxes = append(manifest.Boxes, ExportBox{
+			ID: box.ID, Name: box.Name, Memo: box.Memo,
+			MaxPhotos: box.MaxPhotosRaw, ProtectRecent: box.ProtectRecentRaw,
+			Archived: box.Archived, ExteriorFilename: box.ExteriorFilename,
+			CreatedAt: box.CreatedAt, UpdatedAt: box.UpdatedAt,
+			Photos: exportPhotos,
+		})
+	}
+
+	fname := fmt.Sprintf("cabinetcam_export_%s.zip", time.Now().Format("20060102_150405"))
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fname))
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	manifestData, _ := json.MarshalIndent(manifest, "", "  ")
+	if f, err := zw.Create("manifest.json"); err == nil {
+		f.Write(manifestData)
+	}
+
+	for _, box := range manifest.Boxes {
+		if box.ExteriorFilename != "" {
+			if data, err := os.ReadFile(filepath.Join(s.UploadsDir, box.ExteriorFilename)); err == nil {
+				if f, err := zw.Create("exteriors/" + box.ExteriorFilename); err == nil {
+					f.Write(data)
+				}
+			}
+		}
+		for _, photo := range box.Photos {
+			if data, err := os.ReadFile(filepath.Join(s.UploadsDir, photo.Filename)); err == nil {
+				if f, err := zw.Create("photos/" + photo.Filename); err == nil {
+					f.Write(data)
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		http.Error(w, "file too large or invalid form", 400)
+		return
+	}
+
+	overwrite := r.FormValue("overwrite") == "true"
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "no file uploaded", 400)
+		return
+	}
+	defer file.Close()
+
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "failed to read file", 500)
+		return
+	}
+
+	zipReader, err := zip.NewReader(bytes.NewReader(fileData), int64(len(fileData)))
+	if err != nil {
+		http.Error(w, "invalid ZIP file", 400)
+		return
+	}
+
+	// Find manifest.json
+	var manifestFile *zip.File
+	for _, f := range zipReader.File {
+		if f.Name == "manifest.json" {
+			manifestFile = f
+			break
+		}
+	}
+	if manifestFile == nil {
+		http.Error(w, "manifest.json not found in ZIP", 400)
+		return
+	}
+
+	manifestReader, err := manifestFile.Open()
+	if err != nil {
+		http.Error(w, "failed to read manifest", 500)
+		return
+	}
+	defer manifestReader.Close()
+
+	var manifest ExportManifest
+	if err := json.NewDecoder(manifestReader).Decode(&manifest); err != nil {
+		http.Error(w, "invalid manifest.json", 400)
+		return
+	}
+
+	// Index ZIP files for lookup
+	zipFiles := make(map[string]*zip.File)
+	for _, f := range zipReader.File {
+		zipFiles[f.Name] = f
+	}
+
+	importedBoxes := 0
+	skippedBoxes := 0
+	importedPhotos := 0
+
+	for _, box := range manifest.Boxes {
+		existing, err := s.getBox(box.ID)
+		boxExists := err == nil && existing != nil
+
+		if boxExists && !overwrite {
+			skippedBoxes++
+			continue
+		}
+
+		tx, err := s.DB.Begin()
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		// Delete existing box data if overwriting
+		if boxExists {
+			existingPhotos, _ := s.getBoxPhotos(box.ID)
+			for _, p := range existingPhotos {
+				os.Remove(filepath.Join(s.UploadsDir, p.Filename))
+			}
+			if existing.ExteriorFilename != "" {
+				os.Remove(filepath.Join(s.UploadsDir, existing.ExteriorFilename))
+			}
+			tx.Exec("DELETE FROM photos WHERE box_id=?", box.ID)
+			tx.Exec("DELETE FROM boxes WHERE id=?", box.ID)
+		}
+
+		// Insert box
+		archivedInt := 0
+		if box.Archived {
+			archivedInt = 1
+		}
+		_, err = tx.Exec(
+			"INSERT INTO boxes (id, name, memo, max_photos, protect_recent, archived, created_at, updated_at, exterior_filename) VALUES (?,?,?,?,?,?,?,?,?)",
+			box.ID, box.Name, box.Memo, box.MaxPhotos, box.ProtectRecent, archivedInt, box.CreatedAt, box.UpdatedAt, box.ExteriorFilename,
+		)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, "failed to insert box", 500)
+			return
+		}
+
+		// Copy exterior file
+		if box.ExteriorFilename != "" {
+			s.extractZipFile(zipFiles, "exteriors/"+box.ExteriorFilename, filepath.Join(s.UploadsDir, box.ExteriorFilename))
+		}
+
+		// Insert photos and copy files
+		for _, photo := range box.Photos {
+			_, err = tx.Exec(
+				"INSERT INTO photos (id, box_id, filename, captured_at, created_at) VALUES (?,?,?,?,?)",
+				photo.ID, box.ID, photo.Filename, photo.CapturedAt, photo.CreatedAt,
+			)
+			if err != nil {
+				tx.Rollback()
+				http.Error(w, "failed to insert photo", 500)
+				return
+			}
+			s.extractZipFile(zipFiles, "photos/"+photo.Filename, filepath.Join(s.UploadsDir, photo.Filename))
+			importedPhotos++
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "db commit error", 500)
+			return
+		}
+		importedBoxes++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{
+		"imported_boxes":  importedBoxes,
+		"skipped_boxes":   skippedBoxes,
+		"imported_photos": importedPhotos,
+	})
+}
+
+func (s *Server) extractZipFile(zipFiles map[string]*zip.File, zipPath, destPath string) {
+	zf, ok := zipFiles[zipPath]
+	if !ok {
+		return
+	}
+	reader, err := zf.Open()
+	if err != nil {
+		return
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return
+	}
+	os.WriteFile(destPath, data, 0644)
 }
 
 // Ensure sort is used (needed for template FuncMap)
