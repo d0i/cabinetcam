@@ -37,18 +37,21 @@ type AppSettings struct {
 }
 
 type Box struct {
-	ID               string
-	Name             string
-	Memo             string
-	MaxPhotosRaw     int // 0 = use app default
-	ProtectRecentRaw int // 0 = use app default
-	MaxPhotos        int // resolved (after applying defaults)
-	ProtectRecent    int // resolved
-	ExteriorFilename string
-	Archived         bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	PhotoCount       int
+	ID                string
+	Name              string
+	Memo              string
+	MaxPhotosRaw      int // 0 = use app default
+	ProtectRecentRaw  int // 0 = use app default
+	MaxPhotos         int // resolved (after applying defaults)
+	ProtectRecent     int // resolved
+	ExteriorFilename  string
+	Annotation        string
+	AnnotationPhotoID string
+	AnnotationAt      *time.Time
+	Archived          bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	PhotoCount        int
 }
 
 type Photo struct {
@@ -113,6 +116,9 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/export", s.handleExport)
 	mux.HandleFunc("POST /api/import", s.handleImport)
+	mux.HandleFunc("GET /api/annotate/next", s.handleAnnotateNext)
+	mux.HandleFunc("POST /api/annotate/{id}", s.handleAnnotateSubmit)
+	mux.HandleFunc("GET /annotate", s.handleAnnotatePage)
 	mux.HandleFunc("GET /settings", s.handleSettingsPage)
 
 	// Static & uploads
@@ -455,7 +461,7 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 	}
 	rows, err := s.DB.Query(`
 		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
-		       b.exterior_filename,
+		       b.exterior_filename, b.annotation, b.annotation_photo_id, b.annotation_at,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.archived=? ORDER BY b.updated_at DESC`, archVal)
 	if err != nil {
@@ -466,11 +472,16 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 	for rows.Next() {
 		var b Box
 		var arch int
-		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.ExteriorFilename, &b.PhotoCount)
+		var annotationAt sql.NullTime
+		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
+			&b.ExteriorFilename, &b.Annotation, &b.AnnotationPhotoID, &annotationAt, &b.PhotoCount)
 		if err != nil {
 			return nil, err
 		}
 		b.Archived = arch == 1
+		if annotationAt.Valid {
+			b.AnnotationAt = &annotationAt.Time
+		}
 		s.resolveBox(&b)
 		boxes = append(boxes, b)
 	}
@@ -480,17 +491,22 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 func (s *Server) getBox(id string) (*Box, error) {
 	var b Box
 	var arch int
+	var annotationAt sql.NullTime
 	err := s.DB.QueryRow(`
 		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
-		       b.exterior_filename,
+		       b.exterior_filename, b.annotation, b.annotation_photo_id, b.annotation_at,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.id=?`, id).Scan(
-		&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt, &b.ExteriorFilename, &b.PhotoCount,
+		&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
+		&b.ExteriorFilename, &b.Annotation, &b.AnnotationPhotoID, &annotationAt, &b.PhotoCount,
 	)
 	if err != nil {
 		return nil, err
 	}
 	b.Archived = arch == 1
+	if annotationAt.Valid {
+		b.AnnotationAt = &annotationAt.Time
+	}
 	s.resolveBox(&b)
 	return &b, nil
 }
@@ -599,6 +615,154 @@ func (s *Server) thinPhotos(boxID string, maxPhotos, protectRecent int) {
 	}
 }
 
+func (s *Server) handleAnnotatePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	s.renderTemplate(w, "annotate.html", nil)
+}
+
+// --- Annotation API ---
+
+type AnnotateNextResponse struct {
+	BoxID                string `json:"box_id"`
+	BoxName              string `json:"box_name"`
+	PhotoID              string `json:"photo_id"`
+	PhotoURL             string `json:"photo_url"`
+	CurrentAnnotation    string `json:"current_annotation"`
+	PhotoCount           int    `json:"photo_count"`
+	PhotosSinceAnnotation int   `json:"photos_since_annotation"`
+	Reason               string `json:"reason"`
+}
+
+func (s *Server) handleAnnotateNext(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Priority 1: Boxes with no annotation, that have photos, not archived.
+	// Order by photo count DESC, then updated_at ASC.
+	row := s.DB.QueryRow(`
+		SELECT b.id, b.name, b.annotation,
+		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id = b.id), 0) as photo_count,
+		       COALESCE((SELECT id FROM photos WHERE box_id = b.id ORDER BY created_at DESC LIMIT 1), '') as newest_photo_id,
+		       COALESCE((SELECT filename FROM photos WHERE box_id = b.id ORDER BY created_at DESC LIMIT 1), '') as newest_photo_filename
+		FROM boxes b
+		WHERE b.archived = 0
+		  AND (b.annotation IS NULL OR b.annotation = '')
+		  AND (SELECT COUNT(*) FROM photos WHERE box_id = b.id) > 0
+		ORDER BY photo_count DESC, b.updated_at ASC
+		LIMIT 1
+	`)
+
+	var boxID, boxName, annotation, newestPhotoID, newestFilename string
+	var photoCount int
+	err := row.Scan(&boxID, &boxName, &annotation, &photoCount, &newestPhotoID, &newestFilename)
+	if err == nil {
+		json.NewEncoder(w).Encode(AnnotateNextResponse{
+			BoxID:                boxID,
+			BoxName:              boxName,
+			PhotoID:              newestPhotoID,
+			PhotoURL:             "/uploads/" + newestFilename,
+			CurrentAnnotation:    "",
+			PhotoCount:           photoCount,
+			PhotosSinceAnnotation: 0,
+			Reason:               "no_annotation",
+		})
+		return
+	}
+
+	// Priority 2: Boxes with stale annotations (photos added after annotation_at).
+	// Order by count of new photos DESC, then annotation_at ASC.
+	row = s.DB.QueryRow(`
+		SELECT b.id, b.name, b.annotation,
+		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id = b.id), 0) as photo_count,
+		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id = b.id AND created_at > b.annotation_at), 0) as new_photos,
+		       COALESCE((SELECT id FROM photos WHERE box_id = b.id ORDER BY created_at DESC LIMIT 1), '') as newest_photo_id,
+		       COALESCE((SELECT filename FROM photos WHERE box_id = b.id ORDER BY created_at DESC LIMIT 1), '') as newest_photo_filename
+		FROM boxes b
+		WHERE b.archived = 0
+		  AND b.annotation IS NOT NULL AND b.annotation != ''
+		  AND b.annotation_at IS NOT NULL
+		  AND (SELECT COUNT(*) FROM photos WHERE box_id = b.id AND created_at > b.annotation_at) > 0
+		ORDER BY new_photos DESC, b.annotation_at ASC
+		LIMIT 1
+	`)
+
+	var newPhotos int
+	err = row.Scan(&boxID, &boxName, &annotation, &photoCount, &newPhotos, &newestPhotoID, &newestFilename)
+	if err == nil {
+		json.NewEncoder(w).Encode(AnnotateNextResponse{
+			BoxID:                boxID,
+			BoxName:              boxName,
+			PhotoID:              newestPhotoID,
+			PhotoURL:             "/uploads/" + newestFilename,
+			CurrentAnnotation:    annotation,
+			PhotoCount:           photoCount,
+			PhotosSinceAnnotation: newPhotos,
+			Reason:               "stale_annotation",
+		})
+		return
+	}
+
+	// No boxes need annotation
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAnnotateSubmit(w http.ResponseWriter, r *http.Request) {
+	boxID := r.PathValue("id")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Check box exists and is not archived
+	box, err := s.getBox(boxID)
+	if err != nil || box.Archived {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "box not found"})
+		return
+	}
+
+	var payload struct {
+		Annotation string `json:"annotation"`
+		PhotoID    string `json:"photo_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON in request body"})
+		return
+	}
+
+	annotation := strings.TrimSpace(payload.Annotation)
+	if annotation == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "annotation field is required and must be non-empty"})
+		return
+	}
+	if payload.PhotoID == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "photo_id field is required"})
+		return
+	}
+
+	// Verify the photo belongs to this box
+	var photoBoxID string
+	err = s.DB.QueryRow("SELECT box_id FROM photos WHERE id=?", payload.PhotoID).Scan(&photoBoxID)
+	if err != nil || photoBoxID != boxID {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "photo_id does not belong to this box"})
+		return
+	}
+
+	// Save annotation
+	now := time.Now()
+	_, err = s.DB.Exec(
+		"UPDATE boxes SET annotation=?, annotation_photo_id=?, annotation_at=?, updated_at=? WHERE id=?",
+		annotation, payload.PhotoID, now, now, boxID,
+	)
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "database error"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "box_id": boxID})
+}
+
 // --- Export/Import ---
 
 type ExportManifest struct {
@@ -614,16 +778,19 @@ type ExportAppSettings struct {
 }
 
 type ExportBox struct {
-	ID               string        `json:"id"`
-	Name             string        `json:"name"`
-	Memo             string        `json:"memo"`
-	MaxPhotos        int           `json:"max_photos"`
-	ProtectRecent    int           `json:"protect_recent"`
-	Archived         bool          `json:"archived"`
-	ExteriorFilename string        `json:"exterior_filename"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	Photos           []ExportPhoto `json:"photos"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	Memo              string        `json:"memo"`
+	MaxPhotos         int           `json:"max_photos"`
+	ProtectRecent     int           `json:"protect_recent"`
+	Archived          bool          `json:"archived"`
+	ExteriorFilename  string        `json:"exterior_filename"`
+	Annotation        string        `json:"annotation"`
+	AnnotationPhotoID string        `json:"annotation_photo_id"`
+	AnnotationAt      *time.Time    `json:"annotation_at"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	Photos            []ExportPhoto `json:"photos"`
 }
 
 type ExportPhoto struct {
@@ -675,6 +842,8 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			ID: box.ID, Name: box.Name, Memo: box.Memo,
 			MaxPhotos: box.MaxPhotosRaw, ProtectRecent: box.ProtectRecentRaw,
 			Archived: box.Archived, ExteriorFilename: box.ExteriorFilename,
+			Annotation: box.Annotation, AnnotationPhotoID: box.AnnotationPhotoID,
+			AnnotationAt: box.AnnotationAt,
 			CreatedAt: box.CreatedAt, UpdatedAt: box.UpdatedAt,
 			Photos: exportPhotos,
 		})
@@ -807,8 +976,9 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 			archivedInt = 1
 		}
 		_, err = tx.Exec(
-			"INSERT INTO boxes (id, name, memo, max_photos, protect_recent, archived, created_at, updated_at, exterior_filename) VALUES (?,?,?,?,?,?,?,?,?)",
+			"INSERT INTO boxes (id, name, memo, max_photos, protect_recent, archived, created_at, updated_at, exterior_filename, annotation, annotation_photo_id, annotation_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
 			box.ID, box.Name, box.Memo, box.MaxPhotos, box.ProtectRecent, archivedInt, box.CreatedAt, box.UpdatedAt, box.ExteriorFilename,
+			box.Annotation, box.AnnotationPhotoID, box.AnnotationAt,
 		)
 		if err != nil {
 			tx.Rollback()

@@ -18,6 +18,7 @@ Designed to be used with NFC tags — stick a tag on each box, tap your phone to
 - **Per-box settings** — Override max photos and protect-recent counts, or inherit app defaults
 - **Lightbox viewer** — Tap any photo to view full-size with navigation and delete
 - **Export/Import** — Download all data as a ZIP file, or restore from a previous export with optional overwrite
+- **Annotation API** — REST API for external clients to annotate box contents from photos, with smart queue prioritization
 
 ## Tech Stack
 
@@ -37,6 +38,7 @@ srv/templates/           Go HTML templates
   archived.html          Archived boxes list
   roll.html              Camera roll — all photos across boxes
   settings.html          App-wide default settings
+  annotate.html          Annotation mockup client
 srv/static/
   style.css              Shared styles (home page uses this)
   script.js              Shared scripts (minimal)
@@ -44,6 +46,7 @@ db/db.go                 Database open + migration runner
 db/migrations/
   001-base.sql           boxes, photos, migrations tables
   002-exterior-and-defaults.sql  exterior_filename, app_settings table
+  003-annotation.sql     annotation, annotation_photo_id, annotation_at columns
 uploads/                 Photo storage (gitignored)
 db.sqlite3               SQLite database (gitignored)
 srv.service              systemd unit file
@@ -98,6 +101,8 @@ make build && sudo systemctl restart srv
 | PUT | `/api/settings` | Update app settings |
 | GET | `/api/export` | Download ZIP of all data |
 | POST | `/api/import` | Upload ZIP to import (form: `file`, `overwrite`) |
+| GET | `/api/annotate/next` | Get next box needing annotation + photo |
+| POST | `/api/annotate/{id}` | Submit annotation text for a box |
 
 ## Photo Thinning Algorithm
 
@@ -133,6 +138,67 @@ cabinetcam_export_20260316_123456.zip
 ```
 
 Import reads this ZIP and restores all boxes and photos. If a box with the same ID already exists, it can be skipped (default) or overwritten (optional checkbox).
+
+## Annotation API
+
+The annotation system enables external clients (e.g., a local MacBook app with vision AI) to annotate box contents by examining photos. Annotations are per-box, not per-photo.
+
+### Selection Algorithm
+
+`GET /api/annotate/next` picks the next box to annotate:
+
+1. **Priority 1: No annotation** — Boxes with photos but no annotation. Ordered by photo count (descending), then oldest `updated_at`.
+2. **Priority 2: Stale annotation** — Boxes where photos were added after the last annotation. Ordered by count of new photos (descending), then oldest `annotation_at`.
+3. **204 No Content** — All boxes are up-to-date.
+
+Archived boxes and boxes with zero photos are always skipped.
+
+### GET /api/annotate/next
+
+Returns:
+```json
+{
+  "box_id": "f8fe2e1bc824a894",
+  "box_name": "Kitchen Cabinet #1",
+  "photo_id": "a36674704d2c4d3c",
+  "photo_url": "/uploads/a36674704d2c4d3c.jpg",
+  "current_annotation": "",
+  "photo_count": 9,
+  "photos_since_annotation": 0,
+  "reason": "no_annotation"
+}
+```
+
+Or `204 No Content` if all boxes are annotated.
+
+### POST /api/annotate/{box_id}
+
+Request:
+```json
+{
+  "annotation": "Plates, bowls, 3 coffee mugs",
+  "photo_id": "a36674704d2c4d3c"
+}
+```
+
+The `photo_id` must belong to the box (prevents stale submissions). Returns `{"status":"ok","box_id":"..."}`.
+
+### Example workflow (curl)
+
+```bash
+# Get next box to annotate
+curl -s http://localhost:8000/api/annotate/next | jq .
+
+# Download the photo for inspection
+curl -s http://localhost:8000/uploads/a36674704d2c4d3c.jpg -o photo.jpg
+
+# Submit annotation
+curl -X POST http://localhost:8000/api/annotate/f8fe2e1bc824a894 \
+  -H 'Content-Type: application/json' \
+  -d '{"annotation":"Nescafe coffee, mugs, bowls","photo_id":"a36674704d2c4d3c"}'
+```
+
+A mockup annotation client is available at `/annotate` for testing.
 
 ## Design
 

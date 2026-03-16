@@ -118,6 +118,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
     <div class="save-hint" id="saveStatus">Auto-saves as you type</div>
   </div>
 
+  {{if .Box.Annotation}}
+  <div class="card">
+    <div class="card-label">🏷️ Annotation</div>
+    <div style="font-size: 14px; color: #333; line-height: 1.5;">{{.Box.Annotation}}</div>
+  </div>
+  {{end}}
+
   <div class="actions">
     <label class="btn btn-primary" for="cameraInput">📷 Take Photo</label>
     <label class="btn btn-outline" for="fileInput">🖼️ Browse</label>

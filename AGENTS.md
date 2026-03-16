@@ -15,3 +15,6 @@ See README.md for architecture, API endpoints, and the photo thinning algorithm.
 - Photos are resized client-side (max 1600px, 85% JPEG quality) before upload
 - The `uploads/` directory and `db.sqlite3` are gitignored
 - Systemd service: `srv.service` — binary is `cabinetcam`, listens on `:8000`
+- Annotation API: `GET /api/annotate/next` + `POST /api/annotate/{id}` for external annotation clients
+- Boxes track annotation text, the photo used for annotation, and the annotation timestamp
+- Annotation selection: unannotated boxes first (by photo count desc), then stale annotations (by new photo count desc)

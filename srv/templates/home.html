@@ -70,6 +70,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
         <div class="card-title">{{.Name}}</div>
         <div class="card-meta">📷 {{.PhotoCount}} photos · Updated {{timeFormat .UpdatedAt}}</div>
         {{if .Memo}}<div class="card-memo">{{.Memo}}</div>{{end}}
+        {{if .Annotation}}<div class="card-memo" style="color:#1565c0;">🏷️ {{.Annotation}}</div>{{end}}
       </div>
     </a>
     {{end}}

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CabinetCam — Annotation Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f5f5f5; color: #333; }
+  .container { max-width: 800px; margin: 0 auto; padding: 16px; }
+  h1 { color: #1976d2; margin-bottom: 16px; font-size: 1.5rem; }
+  .status { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
+            font-weight: 500; }
+  .status.info { background: #e3f2fd; color: #1565c0; }
+  .status.success { background: #e8f5e9; color: #2e7d32; }
+  .status.done { background: #fff3e0; color: #e65100; }
+  .status.error { background: #ffebee; color: #c62828; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.1);
+          padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 1.2rem; margin-bottom: 4px; }
+  .card .meta { color: #666; font-size: 0.9rem; margin-bottom: 12px; }
+  .card .badge { display: inline-block; background: #e3f2fd; color: #1565c0;
+                 padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
+  .card .badge.stale { background: #fff3e0; color: #e65100; }
+  .photo-frame { width: 100%; border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+                 background: #eee; min-height: 200px; display: flex; align-items: center;
+                 justify-content: center; }
+  .photo-frame img { width: 100%; display: block; }
+  .annotation-area { width: 100%; }
+  .annotation-area label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .annotation-area textarea { width: 100%; min-height: 100px; padding: 12px;
+                               border: 2px solid #ddd; border-radius: 8px; font-size: 1rem;
+                               font-family: inherit; resize: vertical; }
+  .annotation-area textarea:focus { border-color: #1976d2; outline: none; }
+  .current-annotation { background: #f5f5f5; border-radius: 8px; padding: 12px;
+                         margin-bottom: 12px; font-style: italic; color: #666; }
+  .current-annotation strong { color: #333; font-style: normal; }
+  .btn { display: inline-block; padding: 12px 24px; border: none; border-radius: 8px;
+         font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 12px; }
+  .btn-primary { background: #1976d2; color: #fff; }
+  .btn-primary:hover { background: #1565c0; }
+  .btn-primary:disabled { background: #bbb; cursor: not-allowed; }
+  .btn-skip { background: #eee; color: #666; margin-left: 8px; }
+  .btn-skip:hover { background: #ddd; }
+  .log { background: #263238; color: #aed581; padding: 16px; border-radius: 8px;
+         font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem;
+         max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+         margin-top: 16px; }
+  .hidden { display: none; }
+  .stats { display: flex; gap: 16px; margin-bottom: 12px; }
+  .stats .stat { text-align: center; }
+  .stats .stat .num { font-size: 1.5rem; font-weight: 700; color: #1976d2; }
+  .stats .stat .label { font-size: 0.8rem; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📝 Annotation Mockup Client</h1>
+
+  <div id="status" class="status info">Loading next box to annotate...</div>
+
+  <div id="annotation-card" class="card hidden">
+    <h2 id="box-name"></h2>
+    <div class="meta">
+      Box ID: <code id="box-id"></code>
+      <span id="reason-badge" class="badge"></span>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="num" id="photo-count">0</div><div class="label">Photos</div></div>
+      <div class="stat"><div class="num" id="new-photos">0</div><div class="label">New Since Annotation</div></div>
+    </div>
+
+    <div id="current-annotation-block" class="current-annotation hidden">
+      <strong>Current annotation:</strong><br>
+      <span id="current-annotation-text"></span>
+    </div>
+
+    <div class="photo-frame">
+      <img id="photo-img" src="" alt="Box contents">
+    </div>
+
+    <div class="annotation-area">
+      <label for="annotation-input">Describe the contents:</label>
+      <textarea id="annotation-input" placeholder="e.g. Plates, bowls, 3 coffee mugs, salt and pepper shakers..."></textarea>
+    </div>
+
+    <button class="btn btn-primary" id="submit-btn" onclick="submitAnnotation()">Submit Annotation</button>
+    <button class="btn btn-skip" onclick="loadNext()">Skip</button>
+  </div>
+
+  <div id="log" class="log"></div>
+</div>
+
+<script>
+let currentBox = null;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, type) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'status ' + type;
+}
+
+async function loadNext() {
+  document.getElementById('annotation-card').classList.add('hidden');
+  setStatus('Loading next box to annotate...', 'info');
+  log('GET /api/annotate/next');
+
+  try {
+    const resp = await fetch('/api/annotate/next');
+    log(`Response: ${resp.status} ${resp.statusText}`);
+
+    if (resp.status === 204) {
+      setStatus('✅ All boxes are annotated! No work to do.', 'done');
+      log('No boxes need annotation.');
+      return;
+    }
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    currentBox = await resp.json();
+    log(`Box: ${currentBox.box_name} (${currentBox.box_id})`);
+    log(`Photo: ${currentBox.photo_id} — ${currentBox.photo_url}`);
+    log(`Reason: ${currentBox.reason}, photos: ${currentBox.photo_count}, new: ${currentBox.photos_since_annotation}`);
+
+    document.getElementById('box-name').textContent = currentBox.box_name;
+    document.getElementById('box-id').textContent = currentBox.box_id;
+    document.getElementById('photo-count').textContent = currentBox.photo_count;
+    document.getElementById('new-photos').textContent = currentBox.photos_since_annotation;
+    document.getElementById('photo-img').src = currentBox.photo_url;
+
+    const badge = document.getElementById('reason-badge');
+    if (currentBox.reason === 'no_annotation') {
+      badge.textContent = 'No annotation';
+      badge.className = 'badge';
+    } else {
+      badge.textContent = 'Stale annotation';
+      badge.className = 'badge stale';
+    }
+
+    const curBlock = document.getElementById('current-annotation-block');
+    if (currentBox.current_annotation) {
+      document.getElementById('current-annotation-text').textContent = currentBox.current_annotation;
+      curBlock.classList.remove('hidden');
+      document.getElementById('annotation-input').value = currentBox.current_annotation;
+    } else {
+      curBlock.classList.add('hidden');
+      document.getElementById('annotation-input').value = '';
+    }
+
+    document.getElementById('annotation-card').classList.remove('hidden');
+    setStatus(`Annotating: ${currentBox.box_name}`, 'info');
+    document.getElementById('annotation-input').focus();
+
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, 'error');
+    log(`Error: ${err.message}`);
+  }
+}
+
+async function submitAnnotation() {
+  if (!currentBox) return;
+  const text = document.getElementById('annotation-input').value.trim();
+  if (!text) {
+    setStatus('Please enter an annotation.', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+
+  const body = JSON.stringify({
+    annotation: text,
+    photo_id: currentBox.photo_id
+  });
+
+  log(`POST /api/annotate/${currentBox.box_id}`);
+  log(`Body: ${body}`);
+
+  try {
+    const resp = await fetch(`/api/annotate/${currentBox.box_id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body
+    });
+
+    const data = await resp.json();
+    log(`Response: ${resp.status} — ${JSON.stringify(data)}`);
+
+    if (!resp.ok) {
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+
+    setStatus(`✅ Annotated "${currentBox.box_name}" successfully!`, 'success');
+    log('Annotation saved. Loading next...');
+
+    setTimeout(loadNext, 1000);
+
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, 'error');
+    log(`Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Submit Annotation';
+  }
+}
+
+// Start
+loadNext();
+</script>
+</body>
+</html>
