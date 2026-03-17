@@ -22,4 +22,6 @@ See README.md for architecture, API endpoints, and the photo thinning algorithm.
 - Token management: `POST/GET/DELETE /api/tokens` (requires exe.dev proxy auth)
 - Mac annotation client: `tools/annotate-client/` — fetches photo → Ollama vision → posts annotation
 - Mock Ollama server: `tools/mock-ollama/` — deterministic fake annotations from image hashes, port 11434
+- Tags: comma-separated in `boxes.tags` column; `TagList()` method returns `[]string`
+- Home page search: client-side AND matching across name, memo, tags, and annotation
 - Makefile targets: `build`, `clean`, `test`, `mock-ollama`, `client`, `client-mac`

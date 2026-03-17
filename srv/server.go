@@ -40,10 +40,11 @@ type Box struct {
 	ID                string
 	Name              string
 	Memo              string
-	MaxPhotosRaw      int // 0 = use app default
-	ProtectRecentRaw  int // 0 = use app default
-	MaxPhotos         int // resolved (after applying defaults)
-	ProtectRecent     int // resolved
+	Tags              string // comma-separated
+	MaxPhotosRaw      int    // 0 = use app default
+	ProtectRecentRaw  int    // 0 = use app default
+	MaxPhotos         int    // resolved (after applying defaults)
+	ProtectRecent     int    // resolved
 	ExteriorFilename  string
 	Annotation        string
 	AnnotationPhotoID string
@@ -52,6 +53,21 @@ type Box struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	PhotoCount        int
+}
+
+// TagList returns tags as a slice, filtering empty strings.
+func (b Box) TagList() []string {
+	if b.Tags == "" {
+		return nil
+	}
+	var result []string
+	for _, t := range strings.Split(b.Tags, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 type Photo struct {
@@ -237,6 +253,7 @@ func (s *Server) handleUpdateBox(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name          *string `json:"name"`
 		Memo          *string `json:"memo"`
+		Tags          *string `json:"tags"`
 		MaxPhotos     *int    `json:"max_photos"`
 		ProtectRecent *int    `json:"protect_recent"`
 	}
@@ -249,6 +266,9 @@ func (s *Server) handleUpdateBox(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.Memo != nil {
 		s.DB.Exec("UPDATE boxes SET memo=?, updated_at=? WHERE id=?", *payload.Memo, time.Now(), id)
+	}
+	if payload.Tags != nil {
+		s.DB.Exec("UPDATE boxes SET tags=?, updated_at=? WHERE id=?", *payload.Tags, time.Now(), id)
 	}
 	if payload.MaxPhotos != nil && *payload.MaxPhotos >= 0 {
 		s.DB.Exec("UPDATE boxes SET max_photos=?, updated_at=? WHERE id=?", *payload.MaxPhotos, time.Now(), id)
@@ -465,7 +485,7 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 		archVal = 1
 	}
 	rows, err := s.DB.Query(`
-		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
+		SELECT b.id, b.name, b.memo, b.tags, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
 		       b.exterior_filename, b.annotation, b.annotation_photo_id, b.annotation_at,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.archived=? ORDER BY b.updated_at DESC`, archVal)
@@ -478,7 +498,7 @@ func (s *Server) listBoxes(archived bool) ([]Box, error) {
 		var b Box
 		var arch int
 		var annotationAt sql.NullTime
-		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
+		err := rows.Scan(&b.ID, &b.Name, &b.Memo, &b.Tags, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
 			&b.ExteriorFilename, &b.Annotation, &b.AnnotationPhotoID, &annotationAt, &b.PhotoCount)
 		if err != nil {
 			return nil, err
@@ -498,11 +518,11 @@ func (s *Server) getBox(id string) (*Box, error) {
 	var arch int
 	var annotationAt sql.NullTime
 	err := s.DB.QueryRow(`
-		SELECT b.id, b.name, b.memo, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
+		SELECT b.id, b.name, b.memo, b.tags, b.max_photos, b.protect_recent, b.archived, b.created_at, b.updated_at,
 		       b.exterior_filename, b.annotation, b.annotation_photo_id, b.annotation_at,
 		       COALESCE((SELECT COUNT(*) FROM photos WHERE box_id=b.id), 0)
 		FROM boxes b WHERE b.id=?`, id).Scan(
-		&b.ID, &b.Name, &b.Memo, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
+		&b.ID, &b.Name, &b.Memo, &b.Tags, &b.MaxPhotos, &b.ProtectRecent, &arch, &b.CreatedAt, &b.UpdatedAt,
 		&b.ExteriorFilename, &b.Annotation, &b.AnnotationPhotoID, &annotationAt, &b.PhotoCount,
 	)
 	if err != nil {
@@ -931,6 +951,7 @@ type ExportBox struct {
 	ID                string        `json:"id"`
 	Name              string        `json:"name"`
 	Memo              string        `json:"memo"`
+	Tags              string        `json:"tags"`
 	MaxPhotos         int           `json:"max_photos"`
 	ProtectRecent     int           `json:"protect_recent"`
 	Archived          bool          `json:"archived"`
@@ -989,7 +1010,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		manifest.Boxes = append(manifest.Boxes, ExportBox{
-			ID: box.ID, Name: box.Name, Memo: box.Memo,
+			ID: box.ID, Name: box.Name, Memo: box.Memo, Tags: box.Tags,
 			MaxPhotos: box.MaxPhotosRaw, ProtectRecent: box.ProtectRecentRaw,
 			Archived: box.Archived, ExteriorFilename: box.ExteriorFilename,
 			Annotation: box.Annotation, AnnotationPhotoID: box.AnnotationPhotoID,
@@ -1126,8 +1147,8 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 			archivedInt = 1
 		}
 		_, err = tx.Exec(
-			"INSERT INTO boxes (id, name, memo, max_photos, protect_recent, archived, created_at, updated_at, exterior_filename, annotation, annotation_photo_id, annotation_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-			box.ID, box.Name, box.Memo, box.MaxPhotos, box.ProtectRecent, archivedInt, box.CreatedAt, box.UpdatedAt, box.ExteriorFilename,
+			"INSERT INTO boxes (id, name, memo, tags, max_photos, protect_recent, archived, created_at, updated_at, exterior_filename, annotation, annotation_photo_id, annotation_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			box.ID, box.Name, box.Memo, box.Tags, box.MaxPhotos, box.ProtectRecent, archivedInt, box.CreatedAt, box.UpdatedAt, box.ExteriorFilename,
 			box.Annotation, box.AnnotationPhotoID, box.AnnotationAt,
 		)
 		if err != nil {

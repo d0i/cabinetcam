@@ -10,6 +10,8 @@ Designed to be used with NFC tags — stick a tag on each box, tap your phone to
 - **Photo capture** — Take photos directly from phone camera or browse files
 - **Client-side image resizing** — Photos are resized to 1600px max before upload for fast, reliable transfers
 - **Exterior photos** — Photograph the outside of a box for easy identification
+- **Tags** — Chip-style tag editor per box; tags shown on home page cards
+- **Search** — Search boxes by name, memo, tags, and annotation text (multi-term AND matching)
 - **Memos** — Free-text notes per box, auto-saved as you type
 - **Smart photo thinning** — Logarithmic time-warping algorithm automatically removes redundant photos when the limit is reached, keeping a good spread of old and recent shots
 - **Camera roll** — Browse all photos across non-archived boxes, with search
@@ -51,6 +53,7 @@ db/migrations/
   002-exterior-and-defaults.sql  exterior_filename, app_settings table
   003-annotation.sql     annotation, annotation_photo_id, annotation_at columns
   004-api-tokens.sql     api_tokens table for bearer token auth
+  005-tags.sql            tags column on boxes
 tools/
   mock-ollama/main.go    Mock Ollama API server for testing
   annotate-client/main.go  Mac client for Ollama-based annotation
@@ -96,7 +99,7 @@ make build && sudo systemctl restart srv
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/boxes` | Create a new box |
-| PUT | `/api/boxes/{id}` | Update box name/memo/settings |
+| PUT | `/api/boxes/{id}` | Update box name/memo/tags/settings |
 | POST | `/api/boxes/{id}/photos` | Upload a content photo |
 | POST | `/api/boxes/{id}/exterior` | Upload/replace exterior photo |
 | DELETE | `/api/boxes/{id}` | Delete box and all photos |
