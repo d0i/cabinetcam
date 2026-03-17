@@ -19,6 +19,9 @@ Designed to be used with NFC tags — stick a tag on each box, tap your phone to
 - **Lightbox viewer** — Tap any photo to view full-size with navigation and delete
 - **Export/Import** — Download all data as a ZIP file, or restore from a previous export with optional overwrite
 - **Annotation API** — REST API for external clients to annotate box contents from photos, with smart queue prioritization
+- **API token authentication** — Bearer tokens for external clients, managed via settings page; exe.dev proxy auth for browser access
+- **Ollama integration** — Local annotation client sends photos to Ollama vision models (llava, etc.) and posts results back
+- **Mock Ollama server** — Test the annotation pipeline without a real LLM; generates deterministic fake annotations from image hashes
 
 ## Tech Stack
 
@@ -47,6 +50,10 @@ db/migrations/
   001-base.sql           boxes, photos, migrations tables
   002-exterior-and-defaults.sql  exterior_filename, app_settings table
   003-annotation.sql     annotation, annotation_photo_id, annotation_at columns
+  004-api-tokens.sql     api_tokens table for bearer token auth
+tools/
+  mock-ollama/main.go    Mock Ollama API server for testing
+  annotate-client/main.go  Mac client for Ollama-based annotation
 uploads/                 Photo storage (gitignored)
 db.sqlite3               SQLite database (gitignored)
 srv.service              systemd unit file
@@ -101,8 +108,13 @@ make build && sudo systemctl restart srv
 | PUT | `/api/settings` | Update app settings |
 | GET | `/api/export` | Download ZIP of all data |
 | POST | `/api/import` | Upload ZIP to import (form: `file`, `overwrite`) |
-| GET | `/api/annotate/next` | Get next box needing annotation + photo |
-| POST | `/api/annotate/{id}` | Submit annotation text for a box |
+| GET | `/api/annotate/next` | Get next box needing annotation + photo ¹ |
+| POST | `/api/annotate/{id}` | Submit annotation text for a box ¹ |
+| POST | `/api/tokens` | Create an API token ² |
+| GET | `/api/tokens` | List tokens (prefix only) ² |
+| DELETE | `/api/tokens/{prefix}` | Revoke a token by prefix ² |
+
+¹ Requires `Authorization: Bearer <token>` header or exe.dev proxy auth ² Requires exe.dev proxy auth (`X-ExeDev-Email` header)
 
 ## Photo Thinning Algorithm
 
@@ -199,6 +211,105 @@ curl -X POST http://localhost:8000/api/annotate/f8fe2e1bc824a894 \
 ```
 
 A mockup annotation client is available at `/annotate` for testing.
+
+## Authentication
+
+CabinetCam uses two layers of authentication:
+
+1. **exe.dev proxy auth** — The site is private by default. Accessing `https://stone-finder.exe.xyz:8000/` requires logging into exe.dev. The proxy injects `X-ExeDev-Email` and `X-ExeDev-UserID` headers. Browser-based access (including the annotation mockup page) uses this.
+
+2. **Bearer tokens** — For external clients (like the Mac annotation client) that can't go through the exe.dev browser login flow. Tokens are managed at `/settings` (API Tokens section) or via the token API:
+
+```bash
+# Create a token (must be done through exe.dev proxy, or simulate the header)
+curl -X POST https://stone-finder.exe.xyz:8000/api/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-macbook"}'
+# Returns: {"token":"abc123...","name":"my-macbook"}
+
+# Use the token
+curl https://stone-finder.exe.xyz:8000/api/annotate/next \
+  -H 'Authorization: Bearer abc123...'
+```
+
+Token management (`POST/GET/DELETE /api/tokens`) requires exe.dev proxy auth. Annotation endpoints accept either method.
+
+## Mac Annotation Client
+
+The annotation client (`tools/annotate-client/`) runs on your Mac and automates the annotation workflow:
+
+1. Fetches the next unannotated box from CabinetCam
+2. Downloads the representative photo
+3. Sends it to a local Ollama vision model for description
+4. Posts the annotation back to the server
+
+### Setup
+
+```bash
+# Cross-compile for Mac (from the server)
+make client-mac
+# Then copy to your Mac:
+scp exedev@stone-finder.exe.xyz:cabinetcam/tools/annotate-client/annotate-client-darwin-arm64 ./annotate-client
+
+# Or build locally on Mac if you have Go:
+go build -o annotate-client ./tools/annotate-client
+
+# Ensure Ollama is running with a vision model:
+ollama pull llava
+ollama serve  # if not already running
+```
+
+### Usage
+
+```bash
+# Create a token first (via browser at /settings, or curl through exe.dev proxy)
+
+# Annotate one box:
+./annotate-client \
+  -server https://stone-finder.exe.xyz:8000 \
+  -token <your-token> \
+  -model llava
+
+# Annotate all boxes in a loop:
+./annotate-client \
+  -server https://stone-finder.exe.xyz:8000 \
+  -token <your-token> \
+  -model llava \
+  -loop
+
+# Preview without submitting:
+./annotate-client \
+  -server https://stone-finder.exe.xyz:8000 \
+  -token <your-token> \
+  -model llava \
+  -dry-run
+
+# Custom prompt:
+./annotate-client \
+  -server https://stone-finder.exe.xyz:8000 \
+  -token <your-token> \
+  -model llava \
+  -prompt "List every item visible in this cabinet photo. Be specific."
+```
+
+### Mock Ollama Server
+
+For testing without a real Ollama installation:
+
+```bash
+# Build and run the mock
+make mock-ollama
+./tools/mock-ollama/mock-ollama  # listens on :11434
+
+# In another terminal, run the client against localhost
+./tools/annotate-client/annotate-client \
+  -server http://localhost:8000 \
+  -token <token> \
+  -ollama http://127.0.0.1:11434 \
+  -loop
+```
+
+The mock generates deterministic fake annotations from image SHA-256 hashes.
 
 ## Design
 

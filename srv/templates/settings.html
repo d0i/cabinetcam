@@ -19,6 +19,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .settings-row input[type=number]:focus { outline: none; border-color: #1976d2; }
 .hint { font-size: 12px; color: #999; margin-top: -6px; margin-bottom: 14px; }
 .save-status { font-size: 12px; color: #4caf50; margin-top: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; }
+.btn:active { opacity: 0.7; }
+.btn:disabled { opacity: 0.4; }
+.btn-primary { background: #1976d2; color: #fff; }
+.btn-outline { background: #fff; color: #666; border: 1.5px solid #ddd; }
+.btn-danger { background: #fff; color: #f44336; border: 1.5px solid #f44336; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.token-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eee; }
+.token-row:last-child { border-bottom: none; }
+.token-name { font-weight: 600; font-size: 14px; flex: 1; }
+.token-meta { font-size: 12px; color: #999; }
+.token-value { font-family: 'SF Mono', Monaco, monospace; font-size: 13px; background: #f5f5f5; padding: 8px 12px; border-radius: 6px; word-break: break-all; margin: 8px 0; border: 1px solid #ddd; }
+.token-copy-hint { font-size: 12px; color: #e65100; margin-bottom: 8px; }
+.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -63,6 +77,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       <button class="btn btn-outline" id="importBtn" onclick="doImport()" disabled>📥 Import</button>
       <div id="importStatus" style="font-size:13px;margin-top:10px;"></div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">🔑 API Tokens</div>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;">Create tokens for external annotation clients (e.g., the Mac Ollama client). Tokens authenticate via <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+
+    <div style="display:flex;gap:8px;margin-bottom:14px;">
+      <input type="text" id="tokenName" placeholder="Token name (e.g. macbook)" style="flex:1;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;">
+      <button class="btn btn-primary btn-sm" onclick="createToken()">Create Token</button>
+    </div>
+
+    <div id="newTokenDisplay" class="hidden" style="margin-bottom:14px;">
+      <div class="token-copy-hint">⚠️ Copy this token now — it won't be shown again!</div>
+      <div class="token-value" id="newTokenValue"></div>
+      <button class="btn btn-outline btn-sm" onclick="copyToken()">📋 Copy</button>
+    </div>
+
+    <div id="tokenList">Loading tokens...</div>
   </div>
 </div>
 
@@ -122,6 +154,81 @@ function doImport() {
       btn.disabled = false;
     });
 }
+
+// --- Token management ---
+
+function loadTokens() {
+  fetch('/api/tokens')
+    .then(r => {
+      if (r.status === 403) throw new Error('Token management requires access via the exe.dev proxy (https://...exe.xyz:8000/settings)');
+      return r.json();
+    })
+    .then(tokens => {
+      const el = document.getElementById('tokenList');
+      if (!tokens.length) {
+        el.innerHTML = '<div style="font-size:13px;color:#999;">No tokens yet.</div>';
+        return;
+      }
+      el.innerHTML = tokens.map(t => {
+        const used = t.last_used_at ? 'Last used: ' + new Date(t.last_used_at).toLocaleString() : 'Never used';
+        return '<div class="token-row">' +
+          '<div><div class="token-name">' + esc(t.name) + '</div>' +
+          '<div class="token-meta"><code>' + esc(t.token_prefix) + '</code> · ' + used + '</div></div>' +
+          '<button class="btn btn-danger btn-sm" onclick="revokeToken(\'' + esc(t.token_prefix.replace('...','')) + '\')">Revoke</button>' +
+          '</div>';
+      }).join('');
+    })
+    .catch(err => {
+      document.getElementById('tokenList').innerHTML = '<div style="font-size:13px;color:#f44336;">' + esc(err.message) + '</div>';
+    });
+}
+
+function createToken() {
+  const name = document.getElementById('tokenName').value.trim() || 'unnamed';
+  fetch('/api/tokens', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  })
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.error); });
+    return r.json();
+  })
+  .then(data => {
+    document.getElementById('newTokenValue').textContent = data.token;
+    document.getElementById('newTokenDisplay').classList.remove('hidden');
+    document.getElementById('tokenName').value = '';
+    loadTokens();
+  })
+  .catch(err => alert('Error: ' + err.message));
+}
+
+function copyToken() {
+  const token = document.getElementById('newTokenValue').textContent;
+  navigator.clipboard.writeText(token).then(() => {
+    const btn = event.target;
+    btn.textContent = '\u2705 Copied!';
+    setTimeout(() => btn.textContent = '\ud83d\udccb Copy', 2000);
+  });
+}
+
+function revokeToken(prefix) {
+  if (!confirm('Revoke token ' + prefix + '...?')) return;
+  fetch('/api/tokens/' + prefix, { method: 'DELETE' })
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.error); });
+      loadTokens();
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+loadTokens();
 </script>
 </body>
 </html>

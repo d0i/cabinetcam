@@ -18,3 +18,8 @@ See README.md for architecture, API endpoints, and the photo thinning algorithm.
 - Annotation API: `GET /api/annotate/next` + `POST /api/annotate/{id}` for external annotation clients
 - Boxes track annotation text, the photo used for annotation, and the annotation timestamp
 - Annotation selection: unannotated boxes first (by photo count desc), then stale annotations (by new photo count desc)
+- API auth: Bearer tokens (`Authorization: Bearer <token>`) or exe.dev proxy auth (`X-ExeDev-Email` header)
+- Token management: `POST/GET/DELETE /api/tokens` (requires exe.dev proxy auth)
+- Mac annotation client: `tools/annotate-client/` — fetches photo → Ollama vision → posts annotation
+- Mock Ollama server: `tools/mock-ollama/` — deterministic fake annotations from image hashes, port 11434
+- Makefile targets: `build`, `clean`, `test`, `mock-ollama`, `client`, `client-mac`

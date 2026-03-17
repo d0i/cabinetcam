@@ -116,10 +116,15 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/export", s.handleExport)
 	mux.HandleFunc("POST /api/import", s.handleImport)
-	mux.HandleFunc("GET /api/annotate/next", s.handleAnnotateNext)
-	mux.HandleFunc("POST /api/annotate/{id}", s.handleAnnotateSubmit)
+	mux.HandleFunc("GET /api/annotate/next", s.requireToken(s.handleAnnotateNext))
+	mux.HandleFunc("POST /api/annotate/{id}", s.requireToken(s.handleAnnotateSubmit))
 	mux.HandleFunc("GET /annotate", s.handleAnnotatePage)
 	mux.HandleFunc("GET /settings", s.handleSettingsPage)
+
+	// Token management (requires exe.dev proxy auth)
+	mux.HandleFunc("POST /api/tokens", s.requireExeDevAuth(s.handleCreateToken))
+	mux.HandleFunc("GET /api/tokens", s.requireExeDevAuth(s.handleListTokens))
+	mux.HandleFunc("DELETE /api/tokens/{token}", s.requireExeDevAuth(s.handleRevokeToken))
 
 	// Static & uploads
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
@@ -613,6 +618,151 @@ func (s *Server) thinPhotos(boxID string, maxPhotos, protectRecent int) {
 		os.Remove(filepath.Join(s.UploadsDir, victim.filename))
 		photos = append(photos[:victimIdx], photos[victimIdx+1:]...)
 	}
+}
+
+// --- Auth middleware ---
+
+// requireToken checks for a valid Bearer token in the Authorization header.
+// The annotation API endpoints use this for external client authentication.
+func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Allow requests from exe.dev proxy (already authenticated via X-ExeDev-Email)
+		if r.Header.Get("X-ExeDev-Email") != "" {
+			next(w, r)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]string{"error": "missing or invalid Authorization header; use Bearer <token>"})
+			return
+		}
+
+		token := strings.TrimPrefix(auth, "Bearer ")
+		var name string
+		err := s.DB.QueryRow("SELECT name FROM api_tokens WHERE token=?", token).Scan(&name)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid token"})
+			return
+		}
+
+		// Update last_used_at
+		s.DB.Exec("UPDATE api_tokens SET last_used_at=? WHERE token=?", time.Now(), token)
+
+		next(w, r)
+	}
+}
+
+// requireExeDevAuth ensures the request comes through the exe.dev proxy with authentication.
+// Used for token management endpoints (create/list/revoke tokens).
+func (s *Server) requireExeDevAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		email := r.Header.Get("X-ExeDev-Email")
+		if email == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(403)
+			json.NewEncoder(w).Encode(map[string]string{"error": "this endpoint requires exe.dev proxy authentication; access via https://stone-finder.exe.xyz:8000/"})
+			return
+		}
+		slog.Info("exe.dev auth", "email", email, "path", r.URL.Path)
+		next(w, r)
+	}
+}
+
+// --- Token management ---
+
+func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		payload.Name = "unnamed"
+	}
+	if payload.Name == "" {
+		payload.Name = "unnamed"
+	}
+
+	// Generate a 32-byte random token, hex-encoded (64 chars)
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	_, err := s.DB.Exec("INSERT INTO api_tokens (token, name, created_at) VALUES (?, ?, ?)",
+		token, payload.Name, time.Now())
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create token"})
+		return
+	}
+
+	slog.Info("token created", "name", payload.Name, "by", r.Header.Get("X-ExeDev-Email"))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token, "name": payload.Name})
+}
+
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.DB.Query("SELECT token, name, created_at, last_used_at FROM api_tokens ORDER BY created_at DESC")
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to list tokens"})
+		return
+	}
+	defer rows.Close()
+
+	type tokenInfo struct {
+		TokenPrefix string  `json:"token_prefix"`
+		Name        string  `json:"name"`
+		CreatedAt   string  `json:"created_at"`
+		LastUsedAt  *string `json:"last_used_at"`
+	}
+	var tokens []tokenInfo
+	for rows.Next() {
+		var t tokenInfo
+		var fullToken string
+		var lastUsed sql.NullTime
+		var createdAt time.Time
+		rows.Scan(&fullToken, &t.Name, &createdAt, &lastUsed)
+		// Show only first 8 chars of token for security
+		if len(fullToken) >= 8 {
+			t.TokenPrefix = fullToken[:8] + "..."
+		}
+		t.CreatedAt = createdAt.Format(time.RFC3339)
+		if lastUsed.Valid {
+			s := lastUsed.Time.Format(time.RFC3339)
+			t.LastUsedAt = &s
+		}
+		tokens = append(tokens, t)
+	}
+	if tokens == nil {
+		tokens = []tokenInfo{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tokens)
+}
+
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	tokenPrefix := r.PathValue("token")
+	// Match by prefix (first 8+ chars)
+	result, err := s.DB.Exec("DELETE FROM api_tokens WHERE token LIKE ?", tokenPrefix+"%")
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to revoke token"})
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "token not found"})
+		return
+	}
+	slog.Info("token revoked", "prefix", tokenPrefix, "by", r.Header.Get("X-ExeDev-Email"))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
 }
 
 func (s *Server) handleAnnotatePage(w http.ResponseWriter, r *http.Request) {
