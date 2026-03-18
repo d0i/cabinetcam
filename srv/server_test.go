@@ -1,6 +1,7 @@
 package srv
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -228,6 +229,62 @@ func TestTokenExpiry(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		if rr.Code != 200 {
 			t.Errorf("got %d, want 200", rr.Code)
+		}
+	})
+}
+
+func TestClearAnnotation(t *testing.T) {
+	s := newTestServer(t)
+
+	// Create a box with an annotation
+	boxID := "testbox123"
+	photoID := "testphoto456"
+	now := time.Now()
+	s.DB.Exec("INSERT INTO boxes (id, name, annotation, annotation_photo_id, annotation_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		boxID, "Test Box", "some items here", photoID, now, now, now)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/annotate/{id}", s.handleClearAnnotation)
+
+	t.Run("clears annotation", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/annotate/"+boxID, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Fatalf("got %d, want 200; body: %s", rr.Code, rr.Body.String())
+		}
+
+		// Verify DB state
+		var annotation, annotPhotoID string
+		var annotAt sql.NullTime
+		s.DB.QueryRow("SELECT annotation, annotation_photo_id, annotation_at FROM boxes WHERE id=?", boxID).Scan(&annotation, &annotPhotoID, &annotAt)
+		if annotation != "" {
+			t.Errorf("annotation not cleared: %q", annotation)
+		}
+		if annotPhotoID != "" {
+			t.Errorf("annotation_photo_id not cleared: %q", annotPhotoID)
+		}
+		if annotAt.Valid {
+			t.Errorf("annotation_at not cleared: %v", annotAt.Time)
+		}
+	})
+
+	t.Run("404 for nonexistent box", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/annotate/nonexistent", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != 404 {
+			t.Errorf("got %d, want 404", rr.Code)
+		}
+	})
+
+	t.Run("404 for archived box", func(t *testing.T) {
+		s.DB.Exec("UPDATE boxes SET archived=1, annotation='stuff' WHERE id=?", boxID)
+		req := httptest.NewRequest("DELETE", "/api/annotate/"+boxID, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != 404 {
+			t.Errorf("got %d, want 404", rr.Code)
 		}
 	})
 }

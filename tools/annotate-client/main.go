@@ -253,7 +253,17 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 		return true, nil
 	}
 
-	// Step 4: Submit annotation back to CabinetCam
+	// Step 4: Ask for confirmation
+	fmt.Printf("\n  Submit this annotation? [y/N] ")
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		log.Println("  ⏭️  Skipped by user")
+		return true, nil
+	}
+
+	// Step 5: Submit annotation back to CabinetCam
 	log.Printf("Submitting annotation for box %s...", box.BoxID)
 	submitBody, _ := json.Marshal(map[string]string{
 		"annotation": annotation,

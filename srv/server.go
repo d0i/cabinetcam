@@ -134,6 +134,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/import", s.handleImport)
 	mux.HandleFunc("GET /api/annotate/next", s.requireToken(s.handleAnnotateNext))
 	mux.HandleFunc("POST /api/annotate/{id}", s.requireToken(s.handleAnnotateSubmit))
+	mux.HandleFunc("DELETE /api/annotate/{id}", s.requireToken(s.handleClearAnnotation))
 	mux.HandleFunc("GET /annotate", s.handleAnnotatePage)
 	mux.HandleFunc("GET /settings", s.handleSettingsPage)
 
@@ -999,6 +1000,34 @@ func (s *Server) handleAnnotateSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "box_id": boxID})
+}
+
+func (s *Server) handleClearAnnotation(w http.ResponseWriter, r *http.Request) {
+	boxID := r.PathValue("id")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Check box exists and is not archived
+	box, err := s.getBox(boxID)
+	if err != nil || box.Archived {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "box not found"})
+		return
+	}
+
+	// Clear annotation fields
+	now := time.Now()
+	_, err = s.DB.Exec(
+		"UPDATE boxes SET annotation='', annotation_photo_id='', annotation_at=NULL, updated_at=? WHERE id=?",
+		now, boxID,
+	)
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "database error"})
+		return
+	}
+
+	slog.Info("annotation cleared", "box_id", boxID, "box_name", box.Name)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "box_id": boxID})
 }
 
