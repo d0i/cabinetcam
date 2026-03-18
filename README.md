@@ -302,7 +302,12 @@ The exe.dev proxy adds these headers for authenticated users:
 - `X-ExeDev-Email` — user's email address
 - `X-ExeDev-UserID` — stable unique user ID
 
-These headers are trusted by the app to identify logged-in users. The `requireAuth` middleware checks `X-ExeDev-Email` to determine if a request is authenticated.
+The proxy **strips client-sent `X-ExeDev-*` headers** from incoming requests, preventing spoofing. Only headers set by the proxy after its own authentication are forwarded to the app. The `requireAuth` middleware trusts `X-ExeDev-Email` to identify logged-in users.
+
+The proxy also adds standard forwarding headers on all requests:
+- `X-Forwarded-For` — client IP
+- `X-Forwarded-Host` — original host header
+- `X-Forwarded-Proto` — `https` (TLS terminated at proxy)
 
 ### Port configuration
 
