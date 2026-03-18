@@ -18,8 +18,10 @@ See README.md for architecture, API endpoints, and the photo thinning algorithm.
 - Annotation API: `GET /api/annotate/next` + `POST /api/annotate/{id}` for external annotation clients
 - Boxes track annotation text, the photo used for annotation, and the annotation timestamp
 - Annotation selection: unannotated boxes first (by photo count desc), then stale annotations (by new photo count desc)
+- Global `requireAuth` middleware wraps entire mux: redirects unauthenticated browsers to `/__exe.dev/login`, returns 401 JSON for unauthenticated API calls; passes through `/api/annotate/*` (own token auth), `/static/*`, `/uploads/*`
 - API auth: Bearer tokens (`Authorization: Bearer <token>`) or exe.dev proxy auth (`X-ExeDev-Email` header)
 - Token management: `POST/GET/DELETE /api/tokens` (requires exe.dev proxy auth)
+- Site must be made public via `ssh exe.dev share set-public cabinetcam` for external bearer-token clients to connect
 - Mac annotation client: `tools/annotate-client/` — fetches photo → Ollama vision → posts annotation
 - Mock Ollama server: `tools/mock-ollama/` — deterministic fake annotations from image hashes, port 11434
 - Tags: comma-separated in `boxes.tags` column; `TagList()` method returns `[]string`

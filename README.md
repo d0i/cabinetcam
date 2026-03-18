@@ -215,27 +215,98 @@ curl -X POST http://localhost:8000/api/annotate/f8fe2e1bc824a894 \
 
 A mockup annotation client is available at `/annotate` for testing.
 
-## Authentication
+## Security
 
-CabinetCam uses two layers of authentication:
+CabinetCam uses a layered auth model. A global `requireAuth` middleware wraps the entire HTTP handler, so **no route is unprotected by default**.
 
-1. **exe.dev proxy auth** — The site is private by default. Accessing `https://stone-finder.exe.xyz:8000/` requires logging into exe.dev. The proxy injects `X-ExeDev-Email` and `X-ExeDev-UserID` headers. Browser-based access (including the annotation mockup page) uses this.
+### Auth middleware behavior
 
-2. **Bearer tokens** — For external clients (like the Mac annotation client) that can't go through the exe.dev browser login flow. Tokens are managed at `/settings` (API Tokens section) or via the token API:
+Every incoming request is checked by `requireAuth` before reaching any route handler:
+
+| Request type | Behavior |
+|---|---|
+| `/api/annotate/*` | **Passed through** to `requireToken` (Bearer token or exe.dev session) |
+| `/static/*`, `/uploads/*` | **Allowed** — public assets needed by bearer-token clients to download photos |
+| Any route with `X-ExeDev-Email` header | **Allowed** — user is authenticated via exe.dev proxy |
+| Other `/api/*` routes (no auth) | **401 JSON** `{"error":"authentication required"}` |
+| Other pages (no auth) | **302 redirect** to `/__exe.dev/login?redirect=<path>` |
+
+### Authentication methods
+
+1. **exe.dev proxy auth** — Primary method for browser access. The exe.dev reverse proxy handles login and injects `X-ExeDev-Email` / `X-ExeDev-UserID` headers on authenticated requests. All web UI pages, settings, and management APIs use this.
+
+2. **Bearer tokens** — For external clients (e.g., the Mac annotation client) that cannot go through the browser login flow. Only the annotation API (`/api/annotate/*`) accepts bearer tokens. Tokens are managed at `/settings` or via the token API:
 
 ```bash
-# Create a token (must be done through exe.dev proxy, or simulate the header)
-curl -X POST https://stone-finder.exe.xyz:8000/api/tokens \
+# Create a token (requires exe.dev proxy auth)
+curl -X POST https://cabinetcam.exe.xyz:8000/api/tokens \
   -H 'Content-Type: application/json' \
   -d '{"name":"my-macbook"}'
 # Returns: {"token":"abc123...","name":"my-macbook"}
 
 # Use the token
-curl https://stone-finder.exe.xyz:8000/api/annotate/next \
+curl https://cabinetcam.exe.xyz:8000/api/annotate/next \
   -H 'Authorization: Bearer abc123...'
 ```
 
-Token management (`POST/GET/DELETE /api/tokens`) requires exe.dev proxy auth. Annotation endpoints accept either method.
+### Route protection summary
+
+| Route | No auth | Bearer token | exe.dev login |
+|---|---|---|---|
+| `GET /` (web UI) | ❌ redirect | — | ✅ |
+| `GET /box/{id}` | ❌ redirect | — | ✅ |
+| `GET /settings` | ❌ redirect | — | ✅ |
+| `POST /api/boxes` | ❌ 401 | — | ✅ |
+| `GET /api/annotate/next` | ❌ 401 | ✅ | ✅ |
+| `POST /api/annotate/{id}` | ❌ 401 | ✅ | ✅ |
+| `POST/GET/DELETE /api/tokens` | ❌ 401 | ❌ (requires exe.dev) | ✅ |
+| `/static/*`, `/uploads/*` | ✅ | — | ✅ |
+
+### Token management
+
+- **Create**: `POST /api/tokens` — requires exe.dev proxy auth
+- **List**: `GET /api/tokens` — returns token prefixes and metadata (never full tokens)
+- **Revoke**: `DELETE /api/tokens/{prefix}` — requires exe.dev proxy auth
+- Tokens record `last_used_at` on each use
+
+## exe.dev Configuration
+
+CabinetCam is designed to run on an exe.dev VM with the HTTPS proxy.
+
+### Making the site public (required for external API access)
+
+By default, exe.dev VMs are **private** — only the VM owner can access them through the proxy. To allow the annotation client (or any bearer-token client) to reach the API from outside, you must make the site public:
+
+```bash
+# Run from your LOCAL machine (not the VM) — this is an exe.dev CLI command
+ssh exe.dev share set-public cabinetcam
+```
+
+This is safe because the `requireAuth` middleware protects all routes:
+- Web UI pages redirect unauthenticated users to exe.dev login
+- APIs return 401 without valid credentials
+- Only `/api/annotate/*` accepts bearer tokens; everything else requires exe.dev session
+- Static assets (`/static/`, `/uploads/`) are intentionally public so bearer-token clients can download photos referenced in API responses
+
+To make it private again:
+
+```bash
+ssh exe.dev share set-private cabinetcam
+```
+
+> **Note**: When private, only users with VM access can reach the site. The annotation client will not be able to connect from external machines.
+
+### Proxy headers
+
+The exe.dev proxy adds these headers for authenticated users:
+- `X-ExeDev-Email` — user's email address
+- `X-ExeDev-UserID` — stable unique user ID
+
+These headers are trusted by the app to identify logged-in users. The `requireAuth` middleware checks `X-ExeDev-Email` to determine if a request is authenticated.
+
+### Port configuration
+
+The server listens on port 8000 (configurable via `-listen` flag). The exe.dev proxy forwards ports 3000–9999 transparently. The systemd service, annotation client defaults, and proxy all use port 8000.
 
 ## Mac Annotation Client
 
@@ -252,7 +323,7 @@ The annotation client (`tools/annotate-client/`) runs on your Mac and automates 
 # Cross-compile for Mac (from the server)
 make client-mac
 # Then copy to your Mac:
-scp exedev@stone-finder.exe.xyz:cabinetcam/tools/annotate-client/annotate-client-darwin-arm64 ./annotate-client
+scp exedev@cabinetcam.exe.xyz:cabinetcam/tools/annotate-client/annotate-client-darwin-arm64 ./annotate-client
 
 # Or build locally on Mac if you have Go:
 go build -o annotate-client ./tools/annotate-client
@@ -269,27 +340,27 @@ ollama serve  # if not already running
 
 # Annotate one box:
 ./annotate-client \
-  -server https://stone-finder.exe.xyz:8000 \
+  -server https://cabinetcam.exe.xyz:8000 \
   -token <your-token> \
   -model llava
 
 # Annotate all boxes in a loop:
 ./annotate-client \
-  -server https://stone-finder.exe.xyz:8000 \
+  -server https://cabinetcam.exe.xyz:8000 \
   -token <your-token> \
   -model llava \
   -loop
 
 # Preview without submitting:
 ./annotate-client \
-  -server https://stone-finder.exe.xyz:8000 \
+  -server https://cabinetcam.exe.xyz:8000 \
   -token <your-token> \
   -model llava \
   -dry-run
 
 # Custom prompt:
 ./annotate-client \
-  -server https://stone-finder.exe.xyz:8000 \
+  -server https://cabinetcam.exe.xyz:8000 \
   -token <your-token> \
   -model llava \
   -prompt "List every item visible in this cabinet photo. Be specific."

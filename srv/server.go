@@ -147,7 +147,7 @@ func (s *Server) Serve(addr string) error {
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadsDir))))
 
 	slog.Info("starting server", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, s.requireAuth(mux))
 }
 
 func generateID() string {
@@ -641,6 +641,47 @@ func (s *Server) thinPhotos(boxID string, maxPhotos, protectRecent int) {
 }
 
 // --- Auth middleware ---
+
+// requireAuth wraps the entire mux and protects all routes from unauthenticated
+// public access. Routes under /api/annotate/ are exempt because they enforce
+// their own Bearer token auth via requireToken. Static assets and uploads are
+// also allowed through so that bearer-token clients can download photos.
+// All other routes require an authenticated exe.dev session (X-ExeDev-Email header);
+// unauthenticated browsers are redirected to the exe.dev login page.
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Annotation API endpoints handle their own Bearer token auth
+		if strings.HasPrefix(r.URL.Path, "/api/annotate/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Static assets and uploads — allow through so bearer-token clients
+		// (annotation client) can download photos referenced in API responses
+		if strings.HasPrefix(r.URL.Path, "/static/") || strings.HasPrefix(r.URL.Path, "/uploads/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Authenticated exe.dev users pass through
+		if r.Header.Get("X-ExeDev-Email") != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// API requests get a JSON 401; browsers get redirected to login
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]string{"error": "authentication required; use exe.dev login or Bearer token"})
+			return
+		}
+
+		// Redirect unauthenticated browsers to exe.dev login
+		redirectURL := "/__exe.dev/login?redirect=" + r.URL.RequestURI()
+		http.Redirect(w, r, redirectURL, http.StatusFound)
+	})
+}
 
 // requireToken checks for a valid Bearer token in the Authorization header.
 // The annotation API endpoints use this for external client authentication.
