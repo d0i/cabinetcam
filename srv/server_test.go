@@ -1,9 +1,15 @@
 package srv
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"srv.exe.dev/db"
 )
 
 func TestRequireAuth(t *testing.T) {
@@ -120,4 +126,108 @@ func TestRequireAuth(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	wdb, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RunMigrations(wdb); err != nil {
+		t.Fatal(err)
+	}
+	uploadsDir := filepath.Join(dir, "uploads")
+	os.MkdirAll(uploadsDir, 0755)
+	return &Server{DB: wdb, UploadsDir: uploadsDir}
+}
+
+func TestTokenExpiry(t *testing.T) {
+	s := newTestServer(t)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("ok"))
+	})
+	handler := s.requireToken(inner)
+
+	// Insert a valid token (expires in 1 hour)
+	validToken := "valid_token_123"
+	_, err := s.DB.Exec("INSERT INTO api_tokens (token, name, created_at, expires_at) VALUES (?, ?, ?, ?)",
+		validToken, "test", time.Now(), time.Now().Add(1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert an expired token
+	expiredToken := "expired_token_456"
+	_, err = s.DB.Exec("INSERT INTO api_tokens (token, name, created_at, expires_at) VALUES (?, ?, ?, ?)",
+		expiredToken, "old", time.Now().Add(-25*time.Hour), time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("valid token works", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/annotate/next", nil)
+		req.Header.Set("Authorization", "Bearer "+validToken)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Errorf("got %d, want 200", rr.Code)
+		}
+	})
+
+	t.Run("expired token rejected", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/annotate/next", nil)
+		req.Header.Set("Authorization", "Bearer "+expiredToken)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 401 {
+			t.Errorf("got %d, want 401", rr.Code)
+		}
+		var resp map[string]string
+		json.NewDecoder(rr.Body).Decode(&resp)
+		if resp["error"] == "" || resp["error"] == "invalid token" {
+			t.Errorf("expected expiry error message, got %q", resp["error"])
+		}
+	})
+
+	t.Run("expired token is deleted from DB", func(t *testing.T) {
+		var count int
+		s.DB.QueryRow("SELECT COUNT(*) FROM api_tokens WHERE token=?", expiredToken).Scan(&count)
+		if count != 0 {
+			t.Errorf("expired token still in DB, count=%d", count)
+		}
+	})
+
+	t.Run("no token gives 401", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/annotate/next", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 401 {
+			t.Errorf("got %d, want 401", rr.Code)
+		}
+	})
+
+	t.Run("bogus token gives 401", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/annotate/next", nil)
+		req.Header.Set("Authorization", "Bearer nonexistent")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 401 {
+			t.Errorf("got %d, want 401", rr.Code)
+		}
+	})
+
+	t.Run("exe.dev header bypasses token check", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/annotate/next", nil)
+		req.Header.Set("X-ExeDev-Email", "user@example.com")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Errorf("got %d, want 200", rr.Code)
+		}
+	})
 }

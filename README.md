@@ -267,7 +267,9 @@ curl https://cabinetcam.exe.xyz:8000/api/annotate/next \
 - **Create**: `POST /api/tokens` — requires exe.dev proxy auth
 - **List**: `GET /api/tokens` — returns token prefixes and metadata (never full tokens)
 - **Revoke**: `DELETE /api/tokens/{prefix}` — requires exe.dev proxy auth
+- Tokens **expire after 24 hours** and are automatically cleaned up
 - Tokens record `last_used_at` on each use
+- Expired tokens are deleted on use and on list; create a fresh token each session
 
 ## exe.dev Configuration
 

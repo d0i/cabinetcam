@@ -81,7 +81,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 
   <div class="card">
     <div class="card-label">🔑 API Tokens</div>
-    <p style="font-size:13px;color:#666;margin-bottom:14px;">Create tokens for external annotation clients (e.g., the Mac Ollama client). Tokens authenticate via <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;">Create tokens for external annotation clients (e.g., the Mac Ollama client). Tokens authenticate via <code>Authorization: Bearer &lt;token&gt;</code>. Tokens expire after <strong>24 hours</strong>.</p>
 
     <div style="display:flex;gap:8px;margin-bottom:14px;">
       <input type="text" id="tokenName" placeholder="Token name (e.g. macbook)" style="flex:1;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;">
@@ -89,7 +89,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
     </div>
 
     <div id="newTokenDisplay" class="hidden" style="margin-bottom:14px;">
-      <div class="token-copy-hint">⚠️ Copy this token now — it won't be shown again!</div>
+      <div class="token-copy-hint">⚠️ Copy this token now — it won't be shown again! Expires in 24 hours.</div>
       <div class="token-value" id="newTokenValue"></div>
       <button class="btn btn-outline btn-sm" onclick="copyToken()">📋 Copy</button>
     </div>
@@ -171,9 +171,20 @@ function loadTokens() {
       }
       el.innerHTML = tokens.map(t => {
         const used = t.last_used_at ? 'Last used: ' + new Date(t.last_used_at).toLocaleString() : 'Never used';
+        const expiryTime = new Date(t.expires_at);
+        const now = new Date();
+        const remainMs = expiryTime - now;
+        let expiryLabel;
+        if (remainMs <= 0) {
+          expiryLabel = '<span style="color:#f44336;font-weight:600;">Expired</span>';
+        } else {
+          const remainH = Math.floor(remainMs / 3600000);
+          const remainM = Math.floor((remainMs % 3600000) / 60000);
+          expiryLabel = '<span style="color:#e65100;">Expires in ' + (remainH > 0 ? remainH + 'h ' : '') + remainM + 'm</span>';
+        }
         return '<div class="token-row">' +
           '<div><div class="token-name">' + esc(t.name) + '</div>' +
-          '<div class="token-meta"><code>' + esc(t.token_prefix) + '</code> · ' + used + '</div></div>' +
+          '<div class="token-meta"><code>' + esc(t.token_prefix) + '</code> · ' + used + ' · ' + expiryLabel + '</div></div>' +
           '<button class="btn btn-danger btn-sm" onclick="revokeToken(\'' + esc(t.token_prefix.replace('...','')) + '\')">Revoke</button>' +
           '</div>';
       }).join('');

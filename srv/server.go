@@ -703,11 +703,21 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 
 		token := strings.TrimPrefix(auth, "Bearer ")
 		var name string
-		err := s.DB.QueryRow("SELECT name FROM api_tokens WHERE token=?", token).Scan(&name)
+		var expiresAt time.Time
+		err := s.DB.QueryRow("SELECT name, expires_at FROM api_tokens WHERE token=?", token).Scan(&name, &expiresAt)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(401)
 			json.NewEncoder(w).Encode(map[string]string{"error": "invalid token"})
+			return
+		}
+
+		if time.Now().After(expiresAt) {
+			// Clean up expired token
+			s.DB.Exec("DELETE FROM api_tokens WHERE token=?", token)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]string{"error": "token expired; create a new one at /settings"})
 			return
 		}
 
@@ -752,21 +762,35 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	rand.Read(b)
 	token := hex.EncodeToString(b)
 
-	_, err := s.DB.Exec("INSERT INTO api_tokens (token, name, created_at) VALUES (?, ?, ?)",
-		token, payload.Name, time.Now())
+	const tokenTTL = 24 * time.Hour
+	now := time.Now()
+	expiresAt := now.Add(tokenTTL)
+
+	_, err := s.DB.Exec("INSERT INTO api_tokens (token, name, created_at, expires_at) VALUES (?, ?, ?, ?)",
+		token, payload.Name, now, expiresAt)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create token"})
 		return
 	}
 
-	slog.Info("token created", "name", payload.Name, "by", r.Header.Get("X-ExeDev-Email"))
+	// Clean up any expired tokens while we're here
+	s.DB.Exec("DELETE FROM api_tokens WHERE expires_at < ?", now)
+
+	slog.Info("token created", "name", payload.Name, "expires", expiresAt.Format(time.RFC3339), "by", r.Header.Get("X-ExeDev-Email"))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token, "name": payload.Name})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"token":      token,
+		"name":       payload.Name,
+		"expires_at": expiresAt.Format(time.RFC3339),
+	})
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.DB.Query("SELECT token, name, created_at, last_used_at FROM api_tokens ORDER BY created_at DESC")
+	// Clean up expired tokens
+	s.DB.Exec("DELETE FROM api_tokens WHERE expires_at < ?", time.Now())
+
+	rows, err := s.DB.Query("SELECT token, name, created_at, last_used_at, expires_at FROM api_tokens ORDER BY created_at DESC")
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to list tokens"})
@@ -779,14 +803,16 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		Name        string  `json:"name"`
 		CreatedAt   string  `json:"created_at"`
 		LastUsedAt  *string `json:"last_used_at"`
+		ExpiresAt   string  `json:"expires_at"`
+		Expired     bool    `json:"expired"`
 	}
 	var tokens []tokenInfo
 	for rows.Next() {
 		var t tokenInfo
 		var fullToken string
 		var lastUsed sql.NullTime
-		var createdAt time.Time
-		rows.Scan(&fullToken, &t.Name, &createdAt, &lastUsed)
+		var createdAt, expiresAt time.Time
+		rows.Scan(&fullToken, &t.Name, &createdAt, &lastUsed, &expiresAt)
 		// Show only first 8 chars of token for security
 		if len(fullToken) >= 8 {
 			t.TokenPrefix = fullToken[:8] + "..."
@@ -796,6 +822,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			s := lastUsed.Time.Format(time.RFC3339)
 			t.LastUsedAt = &s
 		}
+		t.ExpiresAt = expiresAt.Format(time.RFC3339)
+		t.Expired = time.Now().After(expiresAt)
 		tokens = append(tokens, t)
 	}
 	if tokens == nil {
