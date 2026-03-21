@@ -2,7 +2,10 @@ module srv.exe.dev
 
 go 1.26.1
 
-require modernc.org/sqlite v1.39.0
+require (
+	golang.org/x/image v0.37.0
+	modernc.org/sqlite v1.39.0
+)
 
 require (
 	cel.dev/expr v0.24.0 // indirect
@@ -43,9 +46,9 @@ require (
 	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/net v0.41.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
-	golang.org/x/text v0.26.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250707201910-8d1bb00bc6a7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250707201910-8d1bb00bc6a7 // indirect
 	google.golang.org/grpc v1.75.0 // indirect

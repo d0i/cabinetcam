@@ -23,6 +23,8 @@ See README.md for architecture, API endpoints, and the photo thinning algorithm.
 - Token management: `POST/GET/DELETE /api/tokens` (requires exe.dev proxy auth); tokens expire after 24 hours
 - Site must be made public via `ssh exe.dev share set-public cabinetcam` for external bearer-token clients to connect
 - Mac annotation client: `tools/annotate-client/` — fetches photo → Ollama vision → posts annotation
+- Ollama timeout: separate `ollamaClient` with `-ollama-timeout` flag (default 600s) for long inference; general HTTP client stays at 120s
+- Image resize: `-resize N` flag (1-100) downscales image to N% before sending to Ollama; uses CatmullRom scaling, JPEG 85% quality
 - Mock Ollama server: `tools/mock-ollama/` — deterministic fake annotations from image hashes, port 11434
 - Tags: comma-separated in `boxes.tags` column; `TagList()` method returns `[]string`
 - Home page search: client-side AND matching across name, memo, tags, and annotation
