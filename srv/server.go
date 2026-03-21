@@ -148,7 +148,7 @@ func (s *Server) Serve(addr string) error {
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadsDir))))
 
 	slog.Info("starting server", "addr", addr)
-	return http.ListenAndServe(addr, s.requireAuth(mux))
+	return http.ListenAndServe(addr, s.accessLog(s.requireAuth(mux)))
 }
 
 func generateID() string {
@@ -641,7 +641,55 @@ func (s *Server) thinPhotos(boxID string, maxPhotos, protectRecent int) {
 	}
 }
 
-// --- Auth middleware ---
+// --- Middleware ---
+
+// statusRecorder wraps http.ResponseWriter to capture the status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.code = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// accessLog logs every HTTP request with method, path, status, auth identity, and client IP.
+func (s *Server) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip noisy static/upload asset requests
+		if strings.HasPrefix(r.URL.Path, "/static/") || strings.HasPrefix(r.URL.Path, "/uploads/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		rec := &statusRecorder{ResponseWriter: w, code: 200}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+
+		// Determine identity
+		identity := "-"
+		if email := r.Header.Get("X-ExeDev-Email"); email != "" {
+			identity = email
+		} else if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			identity = "bearer:" + r.Header.Get("Authorization")[7:15] + "..."
+		}
+
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+
+		slog.Info("http",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", rec.code,
+			"ms", time.Since(start).Milliseconds(),
+			"identity", identity,
+			"ip", clientIP,
+		)
+	})
+}
 
 // requireAuth wraps the entire mux and protects all routes from unauthenticated
 // public access. Routes under /api/annotate/ are exempt because they enforce
