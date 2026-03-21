@@ -19,10 +19,11 @@
 //	-server   CabinetCam server URL (required)
 //	-token    API bearer token (required; create via POST /api/tokens)
 //	-ollama   Ollama API base URL (default: http://127.0.0.1:11434)
-//	-model    Ollama vision model name (default: llava)
+//	-model    Ollama vision model name (default: qwen3-vl:8b)
 //	-prompt   Custom prompt for the vision model
 //	-loop     Keep running until all boxes are annotated
-//	-dry-run  Fetch and describe but don't submit annotations
+//	-dry-run      Fetch and describe but don't submit annotations
+//	-interactive  Prompt for confirmation before submitting each annotation
 package main
 
 import (
@@ -74,10 +75,11 @@ func main() {
 	serverURL := flag.String("server", "", "CabinetCam server URL (e.g. https://stone-finder.exe.xyz:8000)")
 	token := flag.String("token", "", "API bearer token")
 	ollamaURL := flag.String("ollama", "http://127.0.0.1:11434", "Ollama API base URL")
-	model := flag.String("model", "llava", "Ollama vision model name")
+	model := flag.String("model", "qwen3-vl:8b", "Ollama vision model name")
 	prompt := flag.String("prompt", "Describe the contents of this cabinet or box photo concisely. List the items you can see. Be specific about quantities and types where possible. Respond with only the item list, no preamble.", "Prompt for vision model")
 	loop := flag.Bool("loop", false, "Keep running until all boxes are annotated")
 	dryRun := flag.Bool("dry-run", false, "Fetch and describe but don't submit")
+	interactive := flag.Bool("interactive", false, "Prompt for confirmation before submitting each annotation")
 	flag.Parse()
 
 	if *serverURL == "" || *token == "" {
@@ -110,7 +112,7 @@ func main() {
 	log.Printf("CabinetCam OK at %s", *serverURL)
 
 	for {
-		annotated, err := processNext(client, *serverURL, *token, *ollamaURL, *model, *prompt, *dryRun)
+		annotated, err := processNext(client, *serverURL, *token, *ollamaURL, *model, *prompt, *dryRun, *interactive)
 		if err != nil {
 			log.Printf("Error: %v", err)
 			if *loop {
@@ -161,7 +163,7 @@ func checkServer(client *http.Client, serverURL, token string) error {
 	return nil
 }
 
-func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt string, dryRun bool) (bool, error) {
+func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt string, dryRun, interactive bool) (bool, error) {
 	// Step 1: Get next box to annotate
 	log.Println("Fetching next box to annotate...")
 	req, _ := http.NewRequest("GET", serverURL+"/api/annotate/next", nil)
@@ -253,14 +255,16 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 		return true, nil
 	}
 
-	// Step 4: Ask for confirmation
-	fmt.Printf("\n  Submit this annotation? [y/N] ")
-	var answer string
-	fmt.Scanln(&answer)
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		log.Println("  ⏭️  Skipped by user")
-		return true, nil
+	// Step 4: Ask for confirmation (only in interactive mode)
+	if interactive {
+		fmt.Printf("\n  Submit this annotation? [y/N] ")
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			log.Println("  ⏭️  Skipped by user")
+			return true, nil
+		}
 	}
 
 	// Step 5: Submit annotation back to CabinetCam
