@@ -6,3 +6,4 @@ uploads/
 tools/mock-ollama/mock-ollama
 tools/annotate-client/annotate-client
 tools/annotate-client/annotate-client-*
+annotate-client
