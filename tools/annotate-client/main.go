@@ -16,13 +16,16 @@
 //
 // Flags:
 //
-//	-server   CabinetCam server URL (required)
-//	-token    API bearer token (required; create via POST /api/tokens)
-//	-ollama   Ollama API base URL (default: http://127.0.0.1:11434)
-//	-model    Ollama vision model name (default: llava)
-//	-prompt   Custom prompt for the vision model
-//	-loop     Keep running until all boxes are annotated
-//	-dry-run  Fetch and describe but don't submit annotations
+//	-server          CabinetCam server URL (required)
+//	-token           API bearer token (required; create via POST /api/tokens)
+//	-ollama          Ollama API base URL (default: http://127.0.0.1:11434)
+//	-model           Ollama vision model name (default: qwen3-vl:8b)
+//	-prompt          Custom prompt for the vision model
+//	-loop            Keep running until all boxes are annotated
+//	-dry-run         Fetch and describe but don't submit annotations
+//	-interactive     Prompt for confirmation before submitting each annotation
+//	-ollama-timeout  Ollama request timeout in seconds (default: 600)
+//	-resize          Resize image to N% before sending to Ollama (0 = no resize)
 package main
 
 import (
@@ -31,12 +34,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/image/draw"
 )
 
 // CabinetCam API types
@@ -74,10 +82,13 @@ func main() {
 	serverURL := flag.String("server", "", "CabinetCam server URL (e.g. https://stone-finder.exe.xyz:8000)")
 	token := flag.String("token", "", "API bearer token")
 	ollamaURL := flag.String("ollama", "http://127.0.0.1:11434", "Ollama API base URL")
-	model := flag.String("model", "llava", "Ollama vision model name")
+	model := flag.String("model", "qwen3-vl:8b", "Ollama vision model name")
 	prompt := flag.String("prompt", "Describe the contents of this cabinet or box photo concisely. List the items you can see. Be specific about quantities and types where possible. Respond with only the item list, no preamble.", "Prompt for vision model")
 	loop := flag.Bool("loop", false, "Keep running until all boxes are annotated")
 	dryRun := flag.Bool("dry-run", false, "Fetch and describe but don't submit")
+	interactive := flag.Bool("interactive", false, "Prompt for confirmation before submitting each annotation")
+	ollamaTimeout := flag.Int("ollama-timeout", 600, "Ollama request timeout in seconds")
+	resize := flag.Int("resize", 0, "Resize image to N% before sending to Ollama (e.g. 50 = half size; 0 = no resize)")
 	flag.Parse()
 
 	if *serverURL == "" || *token == "" {
@@ -94,6 +105,7 @@ func main() {
 	*ollamaURL = strings.TrimRight(*ollamaURL, "/")
 
 	client := &http.Client{Timeout: 120 * time.Second}
+	ollamaClient := &http.Client{Timeout: time.Duration(*ollamaTimeout) * time.Second}
 
 	// Check Ollama connectivity
 	log.Println("Checking Ollama connectivity...")
@@ -109,8 +121,12 @@ func main() {
 	}
 	log.Printf("CabinetCam OK at %s", *serverURL)
 
+	if *resize < 0 || *resize > 100 {
+		log.Fatalf("-resize must be 0-100 (got %d)", *resize)
+	}
+
 	for {
-		annotated, err := processNext(client, *serverURL, *token, *ollamaURL, *model, *prompt, *dryRun)
+		annotated, err := processNext(client, ollamaClient, *serverURL, *token, *ollamaURL, *model, *prompt, *dryRun, *interactive, *resize)
 		if err != nil {
 			log.Printf("Error: %v", err)
 			if *loop {
@@ -161,7 +177,7 @@ func checkServer(client *http.Client, serverURL, token string) error {
 	return nil
 }
 
-func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt string, dryRun bool) (bool, error) {
+func processNext(client, ollamaClient *http.Client, serverURL, token, ollamaURL, model, prompt string, dryRun, interactive bool, resize int) (bool, error) {
 	// Step 1: Get next box to annotate
 	log.Println("Fetching next box to annotate...")
 	req, _ := http.NewRequest("GET", serverURL+"/api/annotate/next", nil)
@@ -211,6 +227,17 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 	}
 	log.Printf("  Photo size: %d bytes", len(imageData))
 
+	// Step 2b: Optionally resize the image
+	if resize > 0 && resize < 100 {
+		resized, err := resizeImage(imageData, resize)
+		if err != nil {
+			log.Printf("  Warning: resize failed, using original: %v", err)
+		} else {
+			log.Printf("  Resized to %d%%: %d bytes (was %d bytes)", resize, len(resized), len(imageData))
+			imageData = resized
+		}
+	}
+
 	// Step 3: Send to Ollama for annotation
 	log.Printf("Sending to Ollama (%s model: %s)...", ollamaURL, model)
 	imageB64 := base64.StdEncoding.EncodeToString(imageData)
@@ -229,7 +256,7 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 
 	reqBody, _ := json.Marshal(ollamaReq)
 	start := time.Now()
-	resp, err = client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewReader(reqBody))
+	resp, err = ollamaClient.Post(ollamaURL+"/api/chat", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		return false, fmt.Errorf("ollama request: %w", err)
 	}
@@ -253,14 +280,16 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 		return true, nil
 	}
 
-	// Step 4: Ask for confirmation
-	fmt.Printf("\n  Submit this annotation? [y/N] ")
-	var answer string
-	fmt.Scanln(&answer)
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		log.Println("  ⏭️  Skipped by user")
-		return true, nil
+	// Step 4: Ask for confirmation (only in interactive mode)
+	if interactive {
+		fmt.Printf("\n  Submit this annotation? [y/N] ")
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			log.Println("  ⏭️  Skipped by user")
+			return true, nil
+		}
 	}
 
 	// Step 5: Submit annotation back to CabinetCam
@@ -286,4 +315,30 @@ func processNext(client *http.Client, serverURL, token, ollamaURL, model, prompt
 
 	log.Printf("  ✅ Annotated \"%s\" successfully", box.BoxName)
 	return true, nil
+}
+
+func resizeImage(data []byte, pct int) ([]byte, error) {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
+	bounds := src.Bounds()
+	newW := bounds.Dx() * pct / 100
+	newH := bounds.Dy() * pct / 100
+	if newW < 1 {
+		newW = 1
+	}
+	if newH < 1 {
+		newH = 1
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, fmt.Errorf("encode: %w", err)
+	}
+	return buf.Bytes(), nil
 }
